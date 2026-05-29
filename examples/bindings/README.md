@@ -1,253 +1,168 @@
-# TypeScript Bindings Generator Example
+# Glassbox TypeScript Bindings
 
-This example demonstrates how to generate TypeScript bindings for a Soroban smart contract using `Glassbox generate-bindings`.
-
-## Prerequisites
-
-- `Glassbox` CLI tool installed
-- Node.js and npm installed
-- A compiled Soroban smart contract WASM file
+Generated TypeScript bindings for Soroban smart contracts, produced by
+`glassbox generate-bindings`.
 
 ## Quick Start
 
-### 1. Generate Bindings
+```bash
+glassbox generate-bindings contract.wasm --output ./generated --package my-contract
+```
+
+With debug metadata enabled:
 
 ```bash
-# Generate bindings from a WASM file
-Glassbox generate-bindings contract.wasm --output ./generated --package my-contract
-
-# With contract ID and network
-Glassbox generate-bindings contract.wasm \
+glassbox generate-bindings contract.wasm \
   --output ./generated \
   --package my-contract \
-  --contract-id CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQAHHAGCN4B2 \
-  --network testnet
-```
-
-### 2. Install Dependencies
-
-```bash
-cd generated
-npm install
-npm run build
-```
-
-### 3. Use the Generated Client
-
-```typescript
-import { MyContractClient } from './generated';
-import * as StellarSdk from '@stellar/stellar-sdk';
-
-// Initialize the client
-const client = new MyContractClient({
-  contractId: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQAHHAGCN4B2',
-  network: 'testnet',
-  enableSimulation: true, // Enable Glassbox simulation
-});
-
-// Create a keypair
-const sourceKeypair = StellarSdk.Keypair.fromSecret('SECRET_KEY');
-
-// Call contract methods with type safety
-async function example() {
-  try {
-    // Simulate first (no transaction sent)
-    const simResult = await client.transfer(
-      sourceKeypair,
-      'GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3B2WSQHG4W37',
-      BigInt(1000000),
-      { simulate: true }
-    );
-    
-    console.log('Simulation result:', simResult);
-    console.log('Budget usage:', simResult.simulation?.budgetUsage);
-    
-    // If simulation looks good, execute for real
-    const result = await client.transfer(
-      sourceKeypair,
-      'GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3B2WSQHG4W37',
-      BigInt(1000000)
-    );
-    
-    console.log('Transaction hash:', result.transactionHash);
-    console.log('Result:', result.result);
-  } catch (error) {
-    console.error('Error:', error);
-  }
-}
-
-example();
+  --debug-metadata \
+  --wasm-source ./contract.wasm
 ```
 
 ## Generated Files
 
-The generator creates the following files:
+| File | Description |
+|------|-------------|
+| `types.ts` | TypeScript interfaces, enums, and typed error classes |
+| `metadata.ts` | Per-function ABI descriptors with source-location hints |
+| `client.ts` | Strongly-typed async client class |
+| `Glassbox-integration.ts` | `ErstSimulator` wrapper for local simulation |
+| `index.ts` | Barrel export |
+| `package.json` | npm package manifest |
+| `README.md` | Usage documentation |
 
-- `types.ts` - TypeScript type definitions for all contract types
-- `client.ts` - Main client class with typed methods
-- `Glassbox-integration.ts` - Glassbox simulator integration
-- `index.ts` - Main export file
-- `package.json` - NPM package configuration
-- `README.md` - Usage documentation
+## Type Safety
 
-## Features
+All Soroban types are mapped to idiomatic TypeScript:
 
-### Type Safety
+| Soroban | TypeScript |
+|---------|-----------|
+| `Bool` | `boolean` |
+| `U32`, `I32` | `number` |
+| `U64`, `I64`, `U128`, `I128`, `U256`, `I256` | `bigint` |
+| `String` | `string` |
+| `Address`, `MuxedAddress` | `Address` (= `string`) |
+| `Bytes` | `Bytes` (= `Uint8Array`) |
+| `BytesN(N)` | `Uint8Array /* length: N */` |
+| `Option<T>` | `T \| null` |
+| `Vec<T>` | `Array<T>` |
+| `Map<K,V>` | `Map<K, V>` |
+| `Result<T,E>` | `Result<T, E>` |
+| UDTs | Named interface / enum |
 
-All contract methods are fully typed:
-
-```typescript
-// Function signature is generated from contract spec
-async transfer(
-  source: StellarSdk.Keypair,
-  to: Address,
-  amount: bigint,
-  options?: CallOptions
-): Promise<CallResult<void>>
-```
-
-### Glassbox Simulation
-
-Test transactions locally before submitting:
-
-```typescript
-const result = await client.someMethod(
-  sourceKeypair,
-  args,
-  { simulate: true } // Runs through Glassbox simulator
-);
-
-// Check resource usage
-console.log('CPU:', result.simulation.budgetUsage.cpuInstructions);
-console.log('Memory:', result.simulation.budgetUsage.memoryBytes);
-```
-
-### Error Handling
-
-Strongly-typed error enums:
+## Basic Usage
 
 ```typescript
-try {
-  await client.transfer(source, to, amount);
-} catch (error) {
-  if (error instanceof InsufficientBalanceError) {
-    console.log('Error code:', error.code);
-  }
-}
-```
+import { MyContractClient } from './generated';
 
-### Custom Types
-
-All contract structs, enums, and unions are generated:
-
-```typescript
-// From contract spec
-interface TokenMetadata {
-  name: string;
-  symbol: string;
-  decimals: number;
-}
-
-enum TransferStatus {
-  Success = 0,
-  Failed = 1,
-  Pending = 2,
-}
-```
-
-## Advanced Usage
-
-### Custom RPC URL
-
-```typescript
 const client = new MyContractClient({
-  contractId: 'CONTRACT_ID',
+  contractId: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQAHHAGCN4B2',
   network: 'testnet',
-  rpcUrl: 'https://custom-rpc.example.com',
+  enableSimulation: true,
 });
-```
 
-### Transaction Options
-
-```typescript
-const result = await client.someMethod(
+// Call a contract method
+const result = await client.transfer(
   sourceKeypair,
-  args,
-  {
-    fee: '10000',
-    memo: StellarSdk.Memo.text('My transaction'),
-    timeoutInSeconds: 60,
-  }
+  'GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3B2WSQHG4W37', // from: Address
+  'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5', // to: Address
+  BigInt(1_000_000),                                             // amount: bigint
 );
+console.log('tx hash:', result.transactionHash);
 ```
 
-### Debug Failed Transactions
+## Simulation
 
 ```typescript
-import { ErstSimulator } from './generated';
+const simResult = await client.transfer(
+  sourceKeypair,
+  fromAddress,
+  toAddress,
+  BigInt(1_000_000),
+  { simulate: true },
+);
+console.log('status:', simResult.simulation?.status);
+console.log('CPU usage:', simResult.simulation?.budgetUsage?.cpuUsagePercent);
+```
+
+## Debug Metadata
+
+When bindings are generated with `--debug-metadata`, each method accepts a
+`withDebugMetadata` option that attaches ABI information to the call result.
+This is useful for building debug tooling, logging, and IDE integrations.
+
+```typescript
+const result = await client.transfer(
+  sourceKeypair,
+  fromAddress,
+  toAddress,
+  BigInt(1_000_000),
+  { withDebugMetadata: true, simulate: true },
+);
+
+// result.debugMetadata contains:
+// {
+//   name: 'transfer',
+//   doc: 'Transfer tokens from one account to another.',
+//   inputs: [
+//     { name: 'from',   sorobanType: 'Address', tsType: 'Address' },
+//     { name: 'to',     sorobanType: 'Address', tsType: 'Address' },
+//     { name: 'amount', sorobanType: 'U128',    tsType: 'bigint'  },
+//   ],
+//   outputs: ['Void'],
+//   source: { sourcePath: './contract.wasm', operationIndex: 0 },
+// }
+console.log('function:', result.debugMetadata?.name);
+console.log('source:',   result.debugMetadata?.source);
+```
+
+You can also access the metadata registry directly:
+
+```typescript
+import { CONTRACT_METADATA } from './generated/metadata';
+
+for (const [name, meta] of Object.entries(CONTRACT_METADATA)) {
+  console.log(`${name}: ${meta.inputs.length} inputs → ${meta.outputs.join(', ')}`);
+}
+```
+
+## Debugging with Glassbox
+
+```typescript
+import { ErstSimulator } from './generated/Glassbox-integration';
 
 const simulator = new ErstSimulator({
   network: 'testnet',
   rpcUrl: 'https://soroban-testnet.stellar.org',
 });
 
-// Debug a failed transaction
+// Debug a failed transaction by hash
 const debugResult = await simulator.debugTransaction(
-  '5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab'
+  '5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab',
 );
-
-console.log('Error:', debugResult.error);
-console.log('Events:', debugResult.events);
-console.log('Logs:', debugResult.logs);
+console.log('error:', debugResult.error);
+console.log('events:', debugResult.events);
 ```
 
-## Integration with CI/CD
+## Error Handling
 
-Use Glassbox simulation in your test pipeline:
+Error enums generate both a TypeScript `enum` and a typed `Error` subclass:
 
 ```typescript
-import { describe, it, expect } from '@jest/globals';
+import { TokenError, TokenErrorError } from './generated/types';
 
-describe('Contract Tests', () => {
-  it('should transfer tokens successfully', async () => {
-    const result = await client.transfer(
-      sourceKeypair,
-      recipient,
-      BigInt(1000),
-      { simulate: true }
-    );
-    
-    expect(result.simulation.status).toBe('success');
-    expect(result.simulation.budgetUsage.cpuUsagePercent).toBeLessThan(80);
-  });
-});
+try {
+  await client.transfer(sourceKeypair, from, to, amount);
+} catch (e) {
+  if (e instanceof TokenErrorError) {
+    switch (e.code) {
+      case TokenError.InsufficientBalance:
+        console.error('Not enough tokens');
+        break;
+      case TokenError.Unauthorized:
+        console.error('Missing authorization');
+        break;
+    }
+  }
+}
 ```
-
-## Troubleshooting
-
-### Glassbox not found
-
-Make sure `Glassbox` is in your PATH:
-
-```bash
-which Glassbox
-# or specify custom path
-const simulator = new ErstSimulator({
-  network: 'testnet',
-  rpcUrl: 'https://soroban-testnet.stellar.org',
-  erstPath: '/path/to/Glassbox',
-});
-```
-
-### Contract spec not found
-
-Ensure your WASM file includes the contract specification:
-
-```bash
-# Check if spec exists
-Glassbox inspect contract.wasm
-```
-
-## License
-
-Apache-2.0
