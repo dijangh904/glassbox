@@ -23,8 +23,9 @@ type Input struct {
 }
 
 // Summarize returns a single-paragraph plain-English explanation of why the
-// transaction executed as it did.  For failed transactions, heuristic rules are
-// applied in priority order to identify the most probable root cause.
+// transaction executed as it did.  For failed transactions the default engine
+// (built-in rules) is used.  Call SetDefaultEngine to override with custom
+// rules loaded from external files.
 func Summarize(in Input) string {
 	if in.Status == "success" {
 		return fmt.Sprintf(
@@ -32,151 +33,7 @@ func Summarize(in Input) string {
 			shortHash(in.TxHash), in.Network,
 		)
 	}
-
-	combined := strings.Join(append(in.Events, in.Logs...), " ") + " " + in.Error
-
-	if reason := checkAuthFailure(in, combined); reason != "" {
-		return reason
-	}
-	if reason := checkBudgetExceeded(in, combined); reason != "" {
-		return reason
-	}
-	if reason := checkInsufficientBalance(in, combined); reason != "" {
-		return reason
-	}
-	if reason := checkMissingEntry(in, combined); reason != "" {
-		return reason
-	}
-	if reason := checkWasmTrap(in, combined); reason != "" {
-		return reason
-	}
-
-	if in.Error != "" {
-		return fmt.Sprintf(
-			"Transaction %s failed on %s. The simulator reported: %s.",
-			shortHash(in.TxHash), in.Network, sanitize(in.Error),
-		)
-	}
-	return fmt.Sprintf(
-		"Transaction %s failed on %s. No diagnostic information was produced; inspect the raw XDR for details.",
-		shortHash(in.TxHash), in.Network,
-	)
-}
-
-// checkAuthFailure detects authorization-related failures, including cross-contract
-// scenarios where one contract invoked another that lacked the required authorization.
-func checkAuthFailure(in Input, combined string) string {
-	lc := strings.ToLower(combined)
-	if !strings.Contains(lc, "error(auth,") &&
-		!strings.Contains(lc, "not authorized") &&
-		!strings.Contains(lc, "require_auth") &&
-		!strings.Contains(lc, "auth failed") &&
-		!strings.Contains(lc, "missing authorization") &&
-		!strings.Contains(lc, "invalidaction") &&
-		!strings.Contains(lc, "notauthorized") {
-		return ""
-	}
-
-	callerID, calleeID := extractCallerCallee(in.DiagnosticEvents)
-	switch {
-	case callerID != "" && calleeID != "":
-		return fmt.Sprintf(
-			"Transaction %s failed on %s because contract %s invoked contract %s which lacked the required authorization.",
-			shortHash(in.TxHash), in.Network, callerID, calleeID,
-		)
-	case calleeID != "":
-		return fmt.Sprintf(
-			"Transaction %s failed on %s because contract %s could not satisfy an authorization check.",
-			shortHash(in.TxHash), in.Network, calleeID,
-		)
-	default:
-		return fmt.Sprintf(
-			"Transaction %s failed on %s due to an authorization failure; a required signature or auth entry was absent or invalid.",
-			shortHash(in.TxHash), in.Network,
-		)
-	}
-}
-
-// checkBudgetExceeded detects CPU or memory budget overruns.
-func checkBudgetExceeded(in Input, combined string) string {
-	lc := strings.ToLower(combined)
-	cpuOver := strings.Contains(lc, "cpulimitexceeded") ||
-		strings.Contains(lc, "cpu limit exceeded") ||
-		strings.Contains(lc, "error(budget, cpu")
-	memOver := strings.Contains(lc, "memlimitexceeded") ||
-		strings.Contains(lc, "memory limit exceeded") ||
-		strings.Contains(lc, "error(budget, mem")
-
-	if in.BudgetUsage != nil {
-		if in.BudgetUsage.CPUUsagePercent >= 100 {
-			cpuOver = true
-		}
-		if in.BudgetUsage.MemoryUsagePercent >= 100 {
-			memOver = true
-		}
-	}
-
-	switch {
-	case cpuOver && memOver:
-		return fmt.Sprintf(
-			"Transaction %s failed on %s because it exhausted both the CPU instruction budget and the memory allocation budget during contract execution.",
-			shortHash(in.TxHash), in.Network,
-		)
-	case cpuOver:
-		return fmt.Sprintf(
-			"Transaction %s failed on %s because the contract execution exceeded the Soroban CPU instruction budget.",
-			shortHash(in.TxHash), in.Network,
-		)
-	case memOver:
-		return fmt.Sprintf(
-			"Transaction %s failed on %s because the contract execution exceeded the Soroban memory allocation budget.",
-			shortHash(in.TxHash), in.Network,
-		)
-	}
-	return ""
-}
-
-// checkInsufficientBalance detects balance or token-transfer failures.
-func checkInsufficientBalance(in Input, combined string) string {
-	lc := strings.ToLower(combined)
-	if strings.Contains(lc, "insufficient_balance") ||
-		strings.Contains(lc, "insufficient balance") ||
-		strings.Contains(lc, "balance is not sufficient") {
-		return fmt.Sprintf(
-			"Transaction %s failed on %s because an account or contract held insufficient balance to cover the requested transfer.",
-			shortHash(in.TxHash), in.Network,
-		)
-	}
-	return ""
-}
-
-// checkMissingEntry detects storage look-up failures for absent ledger entries.
-func checkMissingEntry(in Input, combined string) string {
-	lc := strings.ToLower(combined)
-	if strings.Contains(lc, "missingvalue") ||
-		strings.Contains(lc, "missing value") ||
-		strings.Contains(lc, "error(storage,") ||
-		strings.Contains(lc, "not found") {
-		return fmt.Sprintf(
-			"Transaction %s failed on %s because a required ledger entry or contract storage key was not present at execution time.",
-			shortHash(in.TxHash), in.Network,
-		)
-	}
-	return ""
-}
-
-// checkWasmTrap detects low-level WASM trap or unhandled panic conditions.
-func checkWasmTrap(in Input, combined string) string {
-	lc := strings.ToLower(combined)
-	if strings.Contains(lc, "wasm trap") ||
-		strings.Contains(lc, "unreachable") ||
-		strings.Contains(lc, "contract_invocation_failed") {
-		return fmt.Sprintf(
-			"Transaction %s failed on %s due to a fatal WASM trap inside the contract, typically caused by an unhandled panic or an explicit unreachable instruction.",
-			shortHash(in.TxHash), in.Network,
-		)
-	}
-	return ""
+	return defaultEngine.Evaluate(in)
 }
 
 // extractCallerCallee returns the last two distinct contract IDs encountered in
