@@ -82,6 +82,8 @@ type BudgetDiagnosticDetails struct {
 	CPUExhausted bool `json:"cpu_exhausted"`
 	// MemoryExhausted is true when the memory budget was fully consumed.
 	MemoryExhausted bool `json:"memory_exhausted"`
+	// HotSpotHint suggests the likely location of the budget-exhausting operation.
+	HotSpotHint string `json:"hot_spot_hint,omitempty"`
 }
 
 // TrapDiagnosticDetails carries WASM trap information for contract trap failures.
@@ -157,12 +159,12 @@ func ClassifyFailure(resp *SimulationResponse) *FailureDiagnostic {
 
 	// 1. CPU budget
 	if isCPUBudgetExhausted(errCode, errMsg, resp.BudgetUsage) {
-		return buildCPUBudgetDiagnostic(errCode, errMsg, resp.BudgetUsage)
+		return buildCPUBudgetDiagnostic(errCode, errMsg, resp.BudgetUsage, resp)
 	}
 
 	// 2. Memory budget
 	if isMemoryBudgetExhausted(errCode, errMsg, resp.BudgetUsage) {
-		return buildMemoryBudgetDiagnostic(errCode, errMsg, resp.BudgetUsage)
+		return buildMemoryBudgetDiagnostic(errCode, errMsg, resp.BudgetUsage, resp)
 	}
 
 	// 3. Auth failure
@@ -289,7 +291,7 @@ func isValidationError(errCode, errMsg string) bool {
 
 // ─── Diagnostic builders ─────────────────────────────────────────────────────
 
-func buildCPUBudgetDiagnostic(errCode, errMsg string, budget *BudgetUsage) *FailureDiagnostic {
+func buildCPUBudgetDiagnostic(errCode, errMsg string, budget *BudgetUsage, resp *SimulationResponse) *FailureDiagnostic {
 	d := &FailureDiagnostic{
 		Category:     FailureCPUBudget,
 		ErrorCode:    errCode,
@@ -305,6 +307,7 @@ func buildCPUBudgetDiagnostic(errCode, errMsg string, budget *BudgetUsage) *Fail
 			MemoryUsagePercent: budget.MemoryUsagePercent,
 			CPUExhausted:       budget.CPUUsagePercent >= 100,
 			MemoryExhausted:    budget.MemoryUsagePercent >= 100,
+			HotSpotHint:        identifyBudgetHotSpot(resp, "CPU"),
 		}
 		d.Summary = fmt.Sprintf(
 			"Contract execution exhausted the Soroban CPU instruction budget: %d/%d instructions used (%.1f%%).",
@@ -316,7 +319,7 @@ func buildCPUBudgetDiagnostic(errCode, errMsg string, budget *BudgetUsage) *Fail
 	return d
 }
 
-func buildMemoryBudgetDiagnostic(errCode, errMsg string, budget *BudgetUsage) *FailureDiagnostic {
+func buildMemoryBudgetDiagnostic(errCode, errMsg string, budget *BudgetUsage, resp *SimulationResponse) *FailureDiagnostic {
 	d := &FailureDiagnostic{
 		Category:     FailureMemoryBudget,
 		ErrorCode:    errCode,
@@ -332,6 +335,7 @@ func buildMemoryBudgetDiagnostic(errCode, errMsg string, budget *BudgetUsage) *F
 			MemoryUsagePercent: budget.MemoryUsagePercent,
 			CPUExhausted:       budget.CPUUsagePercent >= 100,
 			MemoryExhausted:    budget.MemoryUsagePercent >= 100,
+			HotSpotHint:        identifyBudgetHotSpot(resp, "Memory"),
 		}
 		d.Summary = fmt.Sprintf(
 			"Contract execution exhausted the Soroban memory allocation budget: %d/%d bytes used (%.1f%%).",
@@ -341,6 +345,52 @@ func buildMemoryBudgetDiagnostic(errCode, errMsg string, budget *BudgetUsage) *F
 		d.Summary = "Contract execution exhausted the Soroban memory allocation budget."
 	}
 	return d
+}
+
+// identifyBudgetHotSpot examines diagnostic events and stack trace to identify
+// the likely location of the budget-exhausting operation.
+func identifyBudgetHotSpot(resp *SimulationResponse, budgetType string) string {
+	if resp == nil {
+		return ""
+	}
+
+	var hints []string
+
+	// Check for a top-level source location (from stack trace)
+	if resp.SourceLocation != nil {
+		loc := fmt.Sprintf("%s:%d", resp.SourceLocation.File, resp.SourceLocation.Line)
+		hints = append(hints, loc)
+	}
+
+	// Check WASM offset for more precise location
+	if resp.WasmOffset != nil && resp.SourceLocation == nil {
+		hints = append(hints, fmt.Sprintf("WASM offset: %d", *resp.WasmOffset))
+	}
+
+	// Look at diagnostic events for last contract call
+	if len(resp.DiagnosticEvents) > 0 {
+		lastEvent := resp.DiagnosticEvents[len(resp.DiagnosticEvents)-1]
+		if lastEvent.ContractID != nil && *lastEvent.ContractID != "" {
+			hints = append(hints, fmt.Sprintf("Last contract: %s", shortCID(*lastEvent.ContractID)))
+		}
+		if lastEvent.FuncName != nil && *lastEvent.FuncName != "" {
+			hints = append(hints, fmt.Sprintf("Function: %s", *lastEvent.FuncName))
+		}
+	}
+
+	if len(hints) == 0 {
+		return "location unavailable"
+	}
+
+	return strings.Join(hints, " | ")
+}
+
+// shortCID returns a shortened contract ID for display.
+func shortCID(id string) string {
+	if len(id) <= 16 {
+		return id
+	}
+	return id[:8] + "..." + id[len(id)-8:]
 }
 
 func buildAuthDiagnostic(errCode, errMsg string, events []DiagnosticEvent) *FailureDiagnostic {

@@ -262,10 +262,24 @@ func TestEngine_BudgetCPU(t *testing.T) {
 		Network: "mainnet",
 		Status:  "error",
 		Error:   "Error(Budget, CpuLimitExceeded)",
+		BudgetUsage: &simulator.BudgetUsage{
+			CPUInstructions:    100_000_000,
+			CPULimit:           100_000_000,
+			CPUUsagePercent:    100.0,
+			MemoryBytes:        10_000_000,
+			MemoryLimit:        50_000_000,
+			MemoryUsagePercent: 20.0,
+		},
 	}
 	got := defaultEngine.Evaluate(in)
 	if !strings.Contains(got, "CPU") {
 		t.Errorf("expected CPU mention, got: %s", got)
+	}
+	if !strings.Contains(got, "100000000") {
+		t.Errorf("expected CPU instructions value in output, got: %s", got)
+	}
+	if !strings.Contains(got, "Optimize contract logic") {
+		t.Errorf("expected remediation hint in output, got: %s", got)
 	}
 }
 
@@ -275,10 +289,24 @@ func TestEngine_BudgetMemory(t *testing.T) {
 		Network: "mainnet",
 		Status:  "error",
 		Error:   "Error(Budget, MemLimitExceeded)",
+		BudgetUsage: &simulator.BudgetUsage{
+			CPUInstructions:    50_000_000,
+			CPULimit:           100_000_000,
+			CPUUsagePercent:    50.0,
+			MemoryBytes:        50_000_000,
+			MemoryLimit:        50_000_000,
+			MemoryUsagePercent: 100.0,
+		},
 	}
 	got := defaultEngine.Evaluate(in)
 	if !strings.Contains(got, "memory") {
 		t.Errorf("expected memory mention, got: %s", got)
+	}
+	if !strings.Contains(got, "50000000") {
+		t.Errorf("expected memory bytes value in output, got: %s", got)
+	}
+	if !strings.Contains(got, "Reduce temporary memory allocation") {
+		t.Errorf("expected remediation hint in output, got: %s", got)
 	}
 }
 
@@ -290,6 +318,10 @@ func TestEngine_BudgetBoth_ViaUsage(t *testing.T) {
 		BudgetUsage: &simulator.BudgetUsage{
 			CPUUsagePercent:    100.0,
 			MemoryUsagePercent: 100.0,
+			CPUInstructions:    100_000_000,
+			CPULimit:           100_000_000,
+			MemoryBytes:        50_000_000,
+			MemoryLimit:        50_000_000,
 		},
 	}
 	got := defaultEngine.Evaluate(in)

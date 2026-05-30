@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -141,6 +142,25 @@ func (e *EnvelopeFile) Validate() error {
 // IsSigned returns true if at least one signature is present.
 func (e *EnvelopeFile) IsSigned() bool {
 	return len(e.Signatures) > 0
+}
+
+// LoadEnvelopeFromReader reads and validates an envelope from an io.Reader (supports stdin).
+func LoadEnvelopeFromReader(r interface{ Read(p []byte) (n int, err error) }) (*EnvelopeFile, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, errors.WrapValidationError(fmt.Sprintf("failed to read envelope: %v", err))
+	}
+
+	var ef EnvelopeFile
+	if err := json.Unmarshal(data, &ef); err != nil {
+		return nil, errors.WrapUnmarshalFailed(err, "envelope")
+	}
+
+	if err := ef.Validate(); err != nil {
+		return nil, err
+	}
+
+	return &ef, nil
 }
 
 // checksumOf returns the hex-encoded SHA-256 digest of s.

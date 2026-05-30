@@ -159,6 +159,45 @@ func TestOverrideData_JSONMarshaling(t *testing.T) {
 	}
 }
 
+func TestLoadTransactionEnvelopeInput_XDRFile(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "tx.xdr")
+	envelopeXdr := buildTestEnvelopeXdr(t)
+	if err := os.WriteFile(tmpFile, []byte(envelopeXdr), 0644); err != nil {
+		t.Fatalf("failed to create temp xdr file: %v", err)
+	}
+
+	loadedEnvelope, loadedMeta, network, err := loadTransactionEnvelopeInput(tmpFile, "", "")
+	assert.NoError(t, err)
+	assert.Equal(t, envelopeXdr, loadedEnvelope)
+	assert.Empty(t, loadedMeta)
+	assert.Empty(t, network)
+}
+
+func TestLoadTransactionEnvelopeInput_JSONFile(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "tx.json")
+	envelopeXdr := buildTestEnvelopeXdr(t)
+	payload := map[string]string{
+		"network":         "testnet",
+		"envelope_xdr":    envelopeXdr,
+		"result_meta_xdr": base64.StdEncoding.EncodeToString([]byte("dummy-meta")),
+	}
+
+data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("failed to marshal payload: %v", err)
+	}
+
+	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+		t.Fatalf("failed to create temp json file: %v", err)
+	}
+
+	loadedEnvelope, loadedMeta, network, err := loadTransactionEnvelopeInput("", tmpFile, "")
+	assert.NoError(t, err)
+	assert.Equal(t, envelopeXdr, loadedEnvelope)
+	assert.Equal(t, payload["result_meta_xdr"], loadedMeta)
+	assert.Equal(t, "testnet", network)
+}
+
 // MockRunner implements simulator.RunnerInterface for testing
 type MockRunner struct {
 	mock.Mock

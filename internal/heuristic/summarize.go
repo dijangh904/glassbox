@@ -12,14 +12,15 @@ import (
 
 // Input collects all available signals about a transaction execution.
 type Input struct {
-	TxHash           string
-	Network          string
-	Status           string
-	Error            string
-	Events           []string
-	Logs             []string
-	DiagnosticEvents []simulator.DiagnosticEvent
-	BudgetUsage      *simulator.BudgetUsage
+	TxHash            string
+	Network           string
+	Status            string
+	Error             string
+	Events            []string
+	Logs              []string
+	DiagnosticEvents  []simulator.DiagnosticEvent
+	BudgetUsage       *simulator.BudgetUsage
+	SourceLocationHint string // Approximate location of the budget-exhausting operation
 }
 
 // Summarize returns a single-paragraph plain-English explanation of why the

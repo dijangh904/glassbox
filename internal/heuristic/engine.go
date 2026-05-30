@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"text/template"
+
+	"github.com/dotandev/glassbox/internal/simulator"
 )
 
 //go:embed builtin_rules.json
@@ -137,11 +139,19 @@ func (e *Engine) RuleSet() *RuleSet {
 
 // templateData is the data passed to each rule's Go template.
 type templateData struct {
-	TxHash  string
-	Network string
-	Caller  string
-	Callee  string
-	Error   string
+	TxHash            string
+	Network           string
+	Caller            string
+	Callee            string
+	Error             string
+	CPUUsed           uint64
+	CPULimit          uint64
+	CPUUsagePercent   float64
+	MemUsed           uint64
+	MemLimit          uint64
+	MemoryUsagePercent float64
+	SourceLoc         string
+	Remediation       string
 }
 
 // Evaluate applies the engine's rules to in and returns the rendered
@@ -157,6 +167,24 @@ func (e *Engine) Evaluate(in Input) string {
 		Caller:  caller,
 		Callee:  callee,
 		Error:   sanitize(in.Error),
+	}
+
+	// Populate budget and source location data from BudgetUsage
+	if in.BudgetUsage != nil {
+		data.CPUUsed = in.BudgetUsage.CPUInstructions
+		data.CPULimit = in.BudgetUsage.CPULimit
+		data.CPUUsagePercent = in.BudgetUsage.CPUUsagePercent
+		data.MemUsed = in.BudgetUsage.MemoryBytes
+		data.MemLimit = in.BudgetUsage.MemoryLimit
+		data.MemoryUsagePercent = in.BudgetUsage.MemoryUsagePercent
+	}
+
+	// Populate source location hint for hot spot identification
+	if in.SourceLocationHint != "" {
+		data.SourceLoc = in.SourceLocationHint
+	} else if in.BudgetUsage != nil && (in.BudgetUsage.CPUUsagePercent >= 100 || in.BudgetUsage.MemoryUsagePercent >= 100) {
+		// Generate remediation hints based on budget exhaustion type
+		data.Remediation = generateBudgetRemediation(in.BudgetUsage)
 	}
 
 	for _, rule := range e.rs.Rules() {
@@ -246,6 +274,41 @@ func budgetFlags(in Input, combined string) (cpuOver, memOver bool) {
 		}
 	}
 	return
+}
+
+// generateBudgetRemediation returns a remediation suggestion based on which budget was exhausted.
+func generateBudgetRemediation(b *simulator.BudgetUsage) string {
+	if b == nil {
+		return ""
+	}
+
+	var hints []string
+
+	if b.CPUUsagePercent >= 100 {
+		cpuHints := []string{
+			"Optimize contract logic to reduce CPU-heavy operations",
+			"Consider reducing loop iterations or batching operations",
+			"Profile and minimize host function calls inside loops",
+			"Use more efficient data structures or algorithms",
+		}
+		hints = append(hints, cpuHints...)
+	}
+
+	if b.MemoryUsagePercent >= 100 {
+		memHints := []string{
+			"Reduce temporary memory allocation by reusing buffers",
+			"Consider streaming processing for large data sets",
+			"Minimize heap allocations in contract functions",
+			"Use fixed-size arrays instead of dynamic vectors where possible",
+		}
+		hints = append(hints, memHints...)
+	}
+
+	if len(hints) == 0 {
+		return ""
+	}
+
+	return strings.Join(hints, "; ") + "."
 }
 
 // renderTemplate executes a Go text/template with the given data.

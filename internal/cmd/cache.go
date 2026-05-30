@@ -17,9 +17,12 @@ import (
 
 var (
 	cacheForceFlag     bool
+	cacheStatusRPCFlag bool
 	cleanOlderThanFlag int
 	cleanNetworkFlag   string
 	cleanAllFlag       bool
+	artifactTypeFlag   string
+	artifactNetworkFlag string
 )
 
 // getCacheDir returns the default cache directory
@@ -84,6 +87,23 @@ var cacheStatusCmd = &cobra.Command{
 		fmt.Printf("Cache size: %s\n", formatBytes(size))
 		fmt.Printf("Files cached: %d\n", len(files))
 		fmt.Printf("Maximum size: %s\n", formatBytes(cache.DefaultConfig().MaxSizeBytes))
+
+		if cacheStatusRPCFlag {
+			rpcDir, err := rpc.GetCachePath()
+			if err != nil {
+				return errors.WrapValidationError(fmt.Sprintf("failed to locate RPC cache: %v", err))
+			}
+			rpcPath := filepath.Join(rpcDir, rpc.CacheDBName)
+			count, err := rpc.CountEntries()
+			if err != nil {
+				return errors.WrapValidationError(fmt.Sprintf("failed to inspect RPC cache: %v", err))
+			}
+			fmt.Printf("RPC cache DB: %s\n", rpcPath)
+			fmt.Printf("RPC cache entries: %d\n", count)
+			if info, err := os.Stat(rpcPath); err == nil {
+				fmt.Printf("RPC cache DB size: %s\n", formatBytes(info.Size()))
+			}
+		}
 
 		if size > cache.DefaultConfig().MaxSizeBytes {
 			fmt.Printf("\n[!]  Cache size exceeds maximum limit. Run 'Glassbox cache clean' to free space.\n")
@@ -189,28 +209,28 @@ func formatBytes(bytes int64) string {
 	return fmt.Sprintf("%.2f %s", size, units[unitIndex])
 }
 
-var cacheCleanRPCCmd = &cobra.Command{
-	Use:   "clean",
-	Short: "Prune the local SQLite RPC fetch cache by date or network",
-	Long: `Remove entries from the local SQLite RPC fetch cache (~/.glassbox/cache.db).
+var cacheRPCCmd = &cobra.Command{
+	Use:   "rpc",
+	Short: "Manage the local SQLite RPC fetch cache",
+	Long: `Manage entries in the local SQLite RPC fetch cache (~/.glassbox/cache.db).
 
-Filter options:
-  --older-than <days>  Remove entries created more than N days ago
-  --network <name>     Remove entries for a specific network (e.g. mainnet, testnet)
-  --all                Remove all cached RPC entries
+ Filter options:
+   --older-than <days>  Remove entries created more than N days ago
+   --network <name>     Remove entries for a specific network (e.g. mainnet, testnet)
+   --all                Remove all cached RPC entries
 
-At least one filter must be specified. Filters can be combined.`,
+ At least one filter must be specified. Filters can be combined.`,
 	Example: `  # Remove entries older than 7 days
-  Glassbox cache clean --older-than 7
+  Glassbox cache rpc --older-than 7
 
   # Remove all testnet entries
-  Glassbox cache clean --network testnet
+  Glassbox cache rpc --network testnet
 
   # Remove testnet entries older than 30 days
-  Glassbox cache clean --older-than 30 --network testnet
+  Glassbox cache rpc --older-than 30 --network testnet
 
   # Remove all RPC cache entries
-  Glassbox cache clean --all`,
+  Glassbox cache rpc --all`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if !cleanAllFlag && cleanOlderThanFlag == 0 && cleanNetworkFlag == "" {
@@ -233,19 +253,156 @@ At least one filter must be specified. Filters can be combined.`,
 	},
 }
 
+var cacheArtifactCmd = &cobra.Command{
+	Use:   "artifact",
+	Short: "Manage cached contract artifacts and ledger entries",
+	Long: `Manage disk-backed cache for contract WASM bytecode and ledger entries.
+
+The artifact cache stores contract code and ledger entries persistently between
+debug sessions to avoid repeated network fetches.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmd.Help()
+	},
+}
+
+var cacheArtifactListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List cached artifacts",
+	Long:  `List all cached contract code and ledger entries. Optionally filter by type and network.`,
+	Example: `  # List all cached artifacts
+  Glassbox cache artifact list
+
+  # List only contract code
+  Glassbox cache artifact list --type contract_code
+
+  # List only mainnet artifacts
+  Glassbox cache artifact list --network mainnet`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cacheDir := getCacheDir()
+		manager := cache.NewManager(cacheDir, cache.DefaultConfig())
+		artifactCache := cache.NewArtifactCache(manager, 24*time.Hour)
+
+		artifactType, _ := cmd.Flags().GetString("type")
+		network, _ := cmd.Flags().GetString("network")
+
+		var artifacts []cache.CachedArtifact
+		if artifactType == "" && network == "" {
+			// List all artifacts
+			var allContracts []cache.CachedArtifact
+			mainnetContracts, _ := artifactCache.List(cache.ArtifactContractCode, "mainnet")
+			testnetContracts, _ := artifactCache.List(cache.ArtifactContractCode, "testnet")
+			futurenetContracts, _ := artifactCache.List(cache.ArtifactContractCode, "futurenet")
+			allContracts = append(allContracts, mainnetContracts...)
+			allContracts = append(allContracts, testnetContracts...)
+			allContracts = append(allContracts, futurenetContracts...)
+
+			var allEntries []cache.CachedArtifact
+			mainnetEntries, _ := artifactCache.List(cache.ArtifactLedgerEntry, "mainnet")
+			testnetEntries, _ := artifactCache.List(cache.ArtifactLedgerEntry, "testnet")
+			futurenetEntries, _ := artifactCache.List(cache.ArtifactLedgerEntry, "futurenet")
+			allEntries = append(allEntries, mainnetEntries...)
+			allEntries = append(allEntries, testnetEntries...)
+			allEntries = append(allEntries, futurenetEntries...)
+
+			artifacts = append(allContracts, allEntries...)
+		} else if artifactType != "" {
+			artifacts, _ = artifactCache.List(cache.ArtifactType(artifactType), network)
+		} else {
+			artifacts, _ = artifactCache.List(cache.ArtifactContractCode, network)
+		}
+
+		if len(artifacts) == 0 {
+			fmt.Println("No cached artifacts found")
+			return nil
+		}
+
+		fmt.Printf("Cached artifacts (%d):\n", len(artifacts))
+		for _, a := range artifacts {
+			keyPreview := a.Key
+			if len(keyPreview) > 16 {
+				keyPreview = keyPreview[:16]
+			}
+			fmt.Printf("  [%s/%s] %s... (%s)\n", a.Type, a.Network, keyPreview, formatBytes(a.Size))
+		}
+		return nil
+	},
+}
+
+var cacheArtifactClearCmd = &cobra.Command{
+	Use:   "clear",
+	Short: "Clear cached artifacts",
+	Long: `Remove all cached contract code or ledger entries.
+
+Use --type to specify the artifact type (contract_code or ledger_entry).
+Use --network to limit the clear to a specific network.
+Use --force to skip confirmation.`,
+	Example: `  # Clear all contract code cache
+  Glassbox cache artifact clear --type contract_code --force
+
+  # Clear all ledger entry cache for testnet
+  Glassbox cache artifact clear --type ledger_entry --network testnet --force`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		artifactType, _ := cmd.Flags().GetString("type")
+		network, _ := cmd.Flags().GetString("network")
+
+		if artifactType == "" || network == "" {
+			return fmt.Errorf("--type and --network are required")
+		}
+
+		if !cacheForceFlag {
+			fmt.Printf("This will delete all cached %s artifacts for %s. Continue? (yes/no): ", artifactType, network)
+			var response string
+			if _, err := fmt.Scanln(&response); err != nil {
+				return fmt.Errorf("failed to read input: %w", err)
+			}
+			if response != "yes" && response != "y" {
+				fmt.Println("Cancelled")
+				return nil
+			}
+		}
+
+		cacheDir := getCacheDir()
+		manager := cache.NewManager(cacheDir, cache.DefaultConfig())
+		artifactCache := cache.NewArtifactCache(manager, 24*time.Hour)
+
+		count, err := artifactCache.Clear(cache.ArtifactType(artifactType), network)
+		if err != nil {
+			return errors.WrapValidationError(fmt.Sprintf("failed to clear artifacts: %v", err))
+		}
+
+		fmt.Printf("Removed %d cached artifacts.\n", count)
+		return nil
+	},
+}
+
 func init() {
+	cacheStatusCmd.Flags().BoolVar(&cacheStatusRPCFlag, "rpc", false, "Include persistent RPC cache statistics")
+
 	// Add subcommands to cache command
 	cacheCmd.AddCommand(cacheStatusCmd)
 	cacheCmd.AddCommand(cacheCleanCmd)
 	cacheCmd.AddCommand(cacheClearCmd)
-	cacheCmd.AddCommand(cacheCleanRPCCmd)
+	cacheCmd.AddCommand(cacheRPCCmd)
+	cacheCmd.AddCommand(cacheArtifactCmd)
+
+	// Wire artifact subcommands
+	cacheArtifactCmd.AddCommand(cacheArtifactListCmd)
+	cacheArtifactCmd.AddCommand(cacheArtifactClearCmd)
+
+	cacheArtifactListCmd.Flags().StringP("type", "t", "", "Filter by artifact type (contract_code, ledger_entry)")
+	cacheArtifactListCmd.Flags().StringP("network", "n", "", "Filter by network (mainnet, testnet, futurenet)")
+	cacheArtifactClearCmd.Flags().StringVarP(&artifactTypeFlag, "type", "t", "", "Artifact type to clear (contract_code, ledger_entry)")
+	cacheArtifactClearCmd.Flags().StringVarP(&artifactNetworkFlag, "network", "n", "", "Network to clear (mainnet, testnet, futurenet)")
 
 	// Add flags
 	cacheCleanCmd.Flags().BoolVarP(&cacheForceFlag, "force", "f", false, "Skip confirmation prompt")
 	cacheClearCmd.Flags().BoolVarP(&cacheForceFlag, "force", "f", false, "Skip confirmation prompt")
-	cacheCleanRPCCmd.Flags().IntVar(&cleanOlderThanFlag, "older-than", 0, "Remove entries older than N days")
-	cacheCleanRPCCmd.Flags().StringVar(&cleanNetworkFlag, "network", "", "Remove entries for a specific network")
-	cacheCleanRPCCmd.Flags().BoolVar(&cleanAllFlag, "all", false, "Remove all RPC cache entries")
+	cacheRPCCmd.Flags().IntVar(&cleanOlderThanFlag, "older-than", 0, "Remove entries older than N days")
+	cacheRPCCmd.Flags().StringVar(&cleanNetworkFlag, "network", "", "Remove entries for a specific network")
+	cacheRPCCmd.Flags().BoolVar(&cleanAllFlag, "all", false, "Remove all RPC cache entries")
 
 	// Add cache command to root
 	rootCmd.AddCommand(cacheCmd)
