@@ -62,6 +62,9 @@ type ExecutionTrace struct {
 	DiagnosticEvents []simulator.DiagnosticEvent `json:"diagnostic_events,omitempty"`
 	CurrentStep      int                         `json:"current_step"`
 	SnapshotInterval int                         `json:"snapshot_interval"`
+
+	// cachedSubcallGraph holds the lazily-built SubcallGraph. Access via SubcallGraph().
+	cachedSubcallGraph *SubcallGraph `json:"-"`
 }
 
 // NewExecutionTrace creates a new execution trace.
@@ -396,12 +399,13 @@ func (t *ExecutionTrace) ExportJSON(schemaVersion string, generatedAt time.Time)
 		"schema_version": schemaVersion,
 		"generated_at": gen.UTC().Truncate(time.Second).Format(time.RFC3339),
 		"trace": map[string]interface{}{
-			"transaction_hash": fingerprint,
-			"start_time": norm(t.StartTime),
-			"end_time": norm(t.EndTime),
-			"states": states,
-			"snapshots": snaps,
+			"transaction_hash":  fingerprint,
+			"start_time":        norm(t.StartTime),
+			"end_time":          norm(t.EndTime),
+			"states":            states,
+			"snapshots":         snaps,
 			"diagnostic_events": t.DiagnosticEvents,
+			"subcall_graph":     exportSubcallGraph(t.SubcallGraph()),
 		},
 	}
 
@@ -509,4 +513,39 @@ func (t *ExecutionTrace) FilteredCurrentIndex(filter string) int {
 		}
 	}
 	return idx
+}
+
+// exportSubcallGraph serialises a SubcallGraph into a JSON-compatible structure.
+func exportSubcallGraph(g *SubcallGraph) interface{} {
+	if g == nil {
+		return nil
+	}
+	type boundaryExport struct {
+		ID               string        `json:"id"`
+		ContractID       string        `json:"contract_id,omitempty"`
+		Function         string        `json:"function,omitempty"`
+		EntryStep        int           `json:"entry_step"`
+		ExitStep         int           `json:"exit_step"`
+		Depth            int           `json:"depth"`
+		Error            string        `json:"error,omitempty"`
+		SubCallCount     int           `json:"subcall_count"`
+	}
+	var flatBoundaries []boundaryExport
+	for _, b := range g.AllBoundaries() {
+		flatBoundaries = append(flatBoundaries, boundaryExport{
+			ID:           b.ID,
+			ContractID:   b.ContractID,
+			Function:     b.Function,
+			EntryStep:    b.EntryStep,
+			ExitStep:     b.ExitStep,
+			Depth:        b.Depth,
+			Error:        b.Error,
+			SubCallCount: len(b.SubCalls),
+		})
+	}
+	return map[string]interface{}{
+		"partial_execution": g.PartialExecution,
+		"root_call_count":   len(g.RootCalls),
+		"boundaries":        flatBoundaries,
+	}
 }

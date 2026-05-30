@@ -326,6 +326,102 @@ func TestDiscoverManifests_NonexistentDir(t *testing.T) {
 	}
 }
 
+// --- TrustLevel ---
+
+func TestManifestValidate_TrustLevelVerified(t *testing.T) {
+	m := validManifest()
+	m.TrustLevel = TrustLevelVerified
+	if err := m.Validate(); err != nil {
+		t.Errorf("expected valid trust level %q to pass, got: %v", TrustLevelVerified, err)
+	}
+}
+
+func TestManifestValidate_TrustLevelCommunity(t *testing.T) {
+	m := validManifest()
+	m.TrustLevel = TrustLevelCommunity
+	if err := m.Validate(); err != nil {
+		t.Errorf("expected valid trust level %q to pass, got: %v", TrustLevelCommunity, err)
+	}
+}
+
+func TestManifestValidate_TrustLevelUntrusted(t *testing.T) {
+	m := validManifest()
+	m.TrustLevel = TrustLevelUntrusted
+	if err := m.Validate(); err != nil {
+		t.Errorf("expected valid trust level %q to pass, got: %v", TrustLevelUntrusted, err)
+	}
+}
+
+func TestManifestValidate_UnknownTrustLevel(t *testing.T) {
+	m := validManifest()
+	m.TrustLevel = TrustLevel("admin")
+	if err := m.Validate(); err == nil {
+		t.Error("expected error for unknown trust level")
+	}
+}
+
+func TestManifestValidate_TrustLevelOmitted(t *testing.T) {
+	m := validManifest()
+	m.TrustLevel = ""
+	if err := m.Validate(); err != nil {
+		t.Errorf("expected omitted trust level to be valid, got: %v", err)
+	}
+}
+
+// --- GlassboxVersionRange ---
+
+func TestManifestValidate_ValidVersionRange(t *testing.T) {
+	cases := []string{
+		">=1.0.0",
+		">=1.0.0 <2.0.0",
+		"^1.2.3",
+		"1.0.0",
+	}
+	for _, vr := range cases {
+		m := validManifest()
+		m.GlassboxVersionRange = vr
+		if err := m.Validate(); err != nil {
+			t.Errorf("expected version range %q to pass, got: %v", vr, err)
+		}
+	}
+}
+
+func TestManifestValidate_InvalidVersionRange(t *testing.T) {
+	cases := []string{
+		"no-digits-at-all",
+		">=",
+		"latest",
+	}
+	for _, vr := range cases {
+		m := validManifest()
+		m.GlassboxVersionRange = vr
+		if err := m.Validate(); err == nil {
+			t.Errorf("expected version range %q to fail validation", vr)
+		}
+	}
+}
+
+func TestManifestValidate_VersionRangeOmitted(t *testing.T) {
+	m := validManifest()
+	m.GlassboxVersionRange = ""
+	if err := m.Validate(); err != nil {
+		t.Errorf("expected omitted version range to be valid, got: %v", err)
+	}
+}
+
+// --- Combined trust + capabilities ---
+
+func TestManifestValidate_FullManifest(t *testing.T) {
+	m := validManifest()
+	m.TrustLevel = TrustLevelCommunity
+	m.GlassboxVersionRange = ">=1.0.0 <3.0.0"
+	m.Capabilities = []Capability{CapabilityDecoder, CapabilityAnalyzer}
+	m.Permissions = []Permission{PermissionReadFS}
+	if err := m.Validate(); err != nil {
+		t.Errorf("expected full manifest to pass, got: %v", err)
+	}
+}
+
 func TestDiscoverManifests_SkipsFiles(t *testing.T) {
 	dir := t.TempDir()
 	// A plain file at the top level should be skipped (not a directory).

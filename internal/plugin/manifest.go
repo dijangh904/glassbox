@@ -15,6 +15,25 @@ import (
 // ManifestVersion is the current schema version for plugin manifests.
 const ManifestVersion = "1"
 
+// TrustLevel expresses how much the host trusts a plugin's origin and content.
+type TrustLevel string
+
+const (
+	// TrustLevelVerified means the plugin has been signed and its identity confirmed.
+	TrustLevelVerified TrustLevel = "verified"
+	// TrustLevelCommunity means the plugin is published by a third-party author.
+	TrustLevelCommunity TrustLevel = "community"
+	// TrustLevelUntrusted is the default for plugins with no explicit trust declaration.
+	TrustLevelUntrusted TrustLevel = "untrusted"
+)
+
+// validTrustLevels is the set of accepted trust level values.
+var validTrustLevels = map[TrustLevel]bool{
+	TrustLevelVerified:  true,
+	TrustLevelCommunity: true,
+	TrustLevelUntrusted: true,
+}
+
 // ManifestFileName is the conventional name for a plugin manifest file.
 const ManifestFileName = "plugin.json"
 
@@ -105,6 +124,16 @@ type Manifest struct {
 	// Checksum is the optional SHA-256 hex digest of the entrypoint binary.
 	// When present the loader verifies the binary before execution.
 	Checksum string `json:"checksum,omitempty"`
+
+	// GlassboxVersionRange is a semver range string (e.g. ">=1.0.0 <2.0.0")
+	// declaring the Glassbox host versions this plugin is compatible with.
+	// An empty value means "all versions accepted". The loader uses this to warn
+	// when the running Glassbox version falls outside the declared range.
+	GlassboxVersionRange string `json:"glassbox_version_range,omitempty"`
+
+	// TrustLevel communicates the plugin author's claimed trust boundary.
+	// Accepted values: "verified", "community", "untrusted" (default when omitted).
+	TrustLevel TrustLevel `json:"trust_level,omitempty"`
 }
 
 // Validate checks that all required fields are present and well-formed.
@@ -136,6 +165,35 @@ func (m *Manifest) Validate() error {
 		if !validPermissions[perm] {
 			return fmt.Errorf("unknown permission %q", perm)
 		}
+	}
+	if m.TrustLevel != "" && !validTrustLevels[m.TrustLevel] {
+		return fmt.Errorf("unknown trust_level %q: must be one of verified, community, untrusted", m.TrustLevel)
+	}
+	if m.GlassboxVersionRange != "" {
+		if err := validateVersionRange(m.GlassboxVersionRange); err != nil {
+			return fmt.Errorf("invalid glassbox_version_range: %w", err)
+		}
+	}
+	return nil
+}
+
+// validateVersionRange performs a basic sanity check on a semver range string.
+// It rejects obviously malformed inputs without requiring a full semver parser.
+func validateVersionRange(vr string) error {
+	vr = strings.TrimSpace(vr)
+	if vr == "" {
+		return fmt.Errorf("version range must not be blank")
+	}
+	// A valid range must contain at least one digit.
+	hasDigit := false
+	for _, c := range vr {
+		if c >= '0' && c <= '9' {
+			hasDigit = true
+			break
+		}
+	}
+	if !hasDigit {
+		return fmt.Errorf("version range %q contains no version numbers", vr)
 	}
 	return nil
 }

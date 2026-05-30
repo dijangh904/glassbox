@@ -20,8 +20,9 @@ import (
 // Resolver coordinates fetching verified source code from a registry,
 // with optional local caching and auto-discovery of local DWARF symbols.
 type Resolver struct {
-	registry *RegistryClient
-	cache    *SourceCache
+	registry        *RegistryClient
+	cache           *SourceCache
+	githubRetriever *GitHubRetriever
 }
 
 // ResolverOption is a functional option for configuring the Resolver.
@@ -80,7 +81,23 @@ func (r *Resolver) Resolve(ctx context.Context, contractID string) (*SourceCode,
 		logger.Logger.Debug("Registry lookup failed", "contract_id", contractID, "error", err)
 	}
 
-	// 3. Fallback: Prompt user if source is unresolved (Issue #372)
+	// 3. GitHub fallback: download from configured repository when registry returns nothing.
+	if source == nil && r.githubRetriever != nil {
+		ghSource, ghErr := r.githubRetriever.Retrieve(ctx, contractID)
+		if ghErr != nil {
+			logger.Logger.Debug("GitHub source retrieval failed",
+				"contract_id", contractID, "error", ghErr)
+		} else if ghSource != nil {
+			logger.Logger.Info("Source resolved from GitHub",
+				"contract_id", contractID,
+				"repository", ghSource.Repository,
+				"file_count", len(ghSource.Files),
+			)
+			return ghSource, nil
+		}
+	}
+
+	// 4. Fallback: Prompt user if source is unresolved (Issue #372)
 	if source == nil {
 		logger.Logger.Info("Contract source unresolved automatically", "contract_id", contractID)
 

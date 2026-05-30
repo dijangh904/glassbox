@@ -73,14 +73,41 @@ var pluginInspectCmd = &cobra.Command{
 	RunE:  runPluginInspect,
 }
 
+// pluginValidateCmd validates a plugin manifest without registering it.
+var pluginValidateCmd = &cobra.Command{
+	Use:   "validate",
+	Short: "Validate a plugin manifest file",
+	Long: `Parse and validate a plugin.json manifest file without registering
+or loading the plugin binary. Useful for CI pipelines and pre-submission checks.
+
+Exits 0 when the manifest is valid, non-zero otherwise.`,
+	RunE: runPluginValidate,
+}
+
+// pluginCapabilitiesCmd lists the capabilities declared by one or all plugins.
+var pluginCapabilitiesCmd = &cobra.Command{
+	Use:   "capabilities [plugin-name]",
+	Short: "List capabilities declared by plugins",
+	Long: `List the capabilities and permissions declared by all discovered plugins,
+or by a single named plugin when a name argument is provided.
+
+Exit 1 is returned when no plugins are found.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runPluginCapabilities,
+}
+
 func init() {
 	pluginListCmd.Flags().StringVar(&pluginDirFlag, "dir", "", "Plugin directory to scan (default: ./plugins)")
 	pluginRegisterCmd.Flags().StringVar(&pluginManifestFlag, "manifest", "", "Path to the plugin.json manifest file")
 	pluginInspectCmd.Flags().StringVar(&pluginDirFlag, "dir", "", "Plugin directory to scan (default: ./plugins)")
+	pluginValidateCmd.Flags().StringVar(&pluginManifestFlag, "manifest", "", "Path to the plugin.json manifest file to validate")
+	pluginCapabilitiesCmd.Flags().StringVar(&pluginDirFlag, "dir", "", "Plugin directory to scan (default: ./plugins)")
 
 	pluginCmd.AddCommand(pluginListCmd)
 	pluginCmd.AddCommand(pluginRegisterCmd)
 	pluginCmd.AddCommand(pluginInspectCmd)
+	pluginCmd.AddCommand(pluginValidateCmd)
+	pluginCmd.AddCommand(pluginCapabilitiesCmd)
 	rootCmd.AddCommand(pluginCmd)
 }
 
@@ -205,6 +232,95 @@ func runPluginInspect(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Checksum:     %s\n", m.Checksum)
 	}
 	return nil
+}
+
+func runPluginValidate(cmd *cobra.Command, args []string) error {
+	if pluginManifestFlag == "" {
+		return errors.WrapCliArgumentRequired("manifest")
+	}
+
+	absPath, err := filepath.Abs(pluginManifestFlag)
+	if err != nil {
+		return errors.WrapValidationError(fmt.Sprintf("invalid manifest path: %v", err))
+	}
+
+	m, err := plugin.LoadManifest(absPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "INVALID: %v\n", err)
+		return errors.WrapValidationError(fmt.Sprintf("manifest validation failed: %v", err))
+	}
+
+	fmt.Printf("VALID: manifest for plugin %q (v%s) passed all checks.\n", m.Name, m.Version)
+	if m.GlassboxVersionRange != "" {
+		fmt.Printf("  Glassbox version range: %s\n", m.GlassboxVersionRange)
+	}
+	if m.TrustLevel != "" {
+		fmt.Printf("  Trust level: %s\n", m.TrustLevel)
+	}
+	return nil
+}
+
+func runPluginCapabilities(cmd *cobra.Command, args []string) error {
+	dir := resolvePluginDir(pluginDirFlag)
+
+	if len(args) == 1 {
+		// Single plugin lookup.
+		pluginName := args[0]
+		manifestPath := filepath.Join(dir, pluginName, plugin.ManifestFileName)
+		m, err := plugin.LoadManifest(manifestPath)
+		if err != nil {
+			return errors.WrapValidationError(
+				fmt.Sprintf("failed to load manifest for plugin %q: %v", pluginName, err),
+			)
+		}
+		printPluginCapabilities(m)
+		return nil
+	}
+
+	manifests, errs := plugin.DiscoverManifests(dir)
+	for _, e := range errs {
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", e)
+	}
+
+	if len(manifests) == 0 {
+		fmt.Printf("No plugins found in %s\n", dir)
+		return errors.WrapValidationError("no plugins found")
+	}
+
+	for _, m := range manifests {
+		printPluginCapabilities(m)
+		fmt.Println()
+	}
+	return nil
+}
+
+// printPluginCapabilities prints the capability and permission summary for a manifest.
+func printPluginCapabilities(m *plugin.Manifest) {
+	fmt.Printf("Plugin: %s (v%s)\n", m.Name, m.Version)
+	fmt.Printf("  Trust Level:  %s\n", trustLevelLabel(m.TrustLevel))
+	if m.GlassboxVersionRange != "" {
+		fmt.Printf("  Glassbox Range: %s\n", m.GlassboxVersionRange)
+	}
+	fmt.Printf("  Capabilities:\n")
+	for _, cap := range m.Capabilities {
+		fmt.Printf("    - %s\n", cap)
+	}
+	if len(m.Permissions) > 0 {
+		fmt.Printf("  Permissions:\n")
+		for _, perm := range m.Permissions {
+			fmt.Printf("    - %s\n", perm)
+		}
+	} else {
+		fmt.Printf("  Permissions: (none)\n")
+	}
+}
+
+// trustLevelLabel returns a display string for a trust level, including default.
+func trustLevelLabel(tl plugin.TrustLevel) string {
+	if tl == "" {
+		return string(plugin.TrustLevelUntrusted) + " (default)"
+	}
+	return string(tl)
 }
 
 // resolvePluginDir returns the plugin directory to use, defaulting to ./plugins.
