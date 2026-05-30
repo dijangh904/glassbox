@@ -94,7 +94,7 @@ Example:
 
 			// --output-json: write deterministic schema'd JSON export and exit
 			if traceOutputJSON != "" {
-				data, err := executionTrace.ExportJSON("1.0")
+				data, err := executionTrace.ExportJSON("1.0", time.Now())
 				if err != nil {
 					return errors.WrapValidationError(fmt.Sprintf("failed to export trace json: %v", err))
 				}

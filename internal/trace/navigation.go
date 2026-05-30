@@ -4,6 +4,7 @@
 package trace
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -288,7 +289,7 @@ func (t *ExecutionTrace) ToJSON() ([]byte, error) {
 // ExportJSON returns a deterministic, schema-versioned JSON export of the trace.
 // Maps are converted to sorted key/value arrays and timestamps are normalised
 // to second precision to reduce non-determinism across runs.
-func (t *ExecutionTrace) ExportJSON(schemaVersion string) ([]byte, error) {
+func (t *ExecutionTrace) ExportJSON(schemaVersion string, generatedAt time.Time) ([]byte, error) {
 	type kv struct {
 		Key   string      `json:"key"`
 		Value interface{} `json:"value"`
@@ -382,11 +383,20 @@ func (t *ExecutionTrace) ExportJSON(schemaVersion string) ([]byte, error) {
 		})
 	}
 
+	// fingerprint transaction hash to avoid exporting raw identifiers
+	h := sha256.Sum256([]byte(t.TransactionHash))
+	fingerprint := fmt.Sprintf("sha256:%x", h)[:32]
+
+	gen := generatedAt
+	if gen.IsZero() {
+		gen = time.Now()
+	}
+
 	exportObj := map[string]interface{}{
 		"schema_version": schemaVersion,
-		"generated_at": time.Now().UTC().Truncate(time.Second).Format(time.RFC3339),
+		"generated_at": gen.UTC().Truncate(time.Second).Format(time.RFC3339),
 		"trace": map[string]interface{}{
-			"transaction_hash": t.TransactionHash,
+			"transaction_hash": fingerprint,
 			"start_time": norm(t.StartTime),
 			"end_time": norm(t.EndTime),
 			"states": states,
