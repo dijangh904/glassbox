@@ -125,7 +125,7 @@ func (s *Server) DebugTransaction(r *http.Request, req *DebugTransactionRequest,
 	ctx := r.Context()
 	tracer := telemetry.GetTracer()
 	ctx, span := tracer.Start(ctx, "rpc_debug_transaction")
-	span.SetAttributes(attribute.String("transaction.hash", req.Hash))
+	span.SetAttributes(telemetry.Attr("transaction.hash", req.Hash))
 	defer span.End()
 
 	logger.Logger.Info("Processing debug_transaction RPC", "hash", req.Hash)
@@ -156,7 +156,7 @@ func (s *Server) GetTrace(r *http.Request, req *GetTraceRequest, resp *GetTraceR
 	ctx := r.Context()
 	tracer := telemetry.GetTracer()
 	_, span := tracer.Start(ctx, "rpc_get_trace")
-	span.SetAttributes(attribute.String("transaction.hash", req.Hash))
+	span.SetAttributes(telemetry.Attr("transaction.hash", req.Hash))
 	defer span.End()
 
 	logger.Logger.Info("Processing get_trace RPC", "hash", req.Hash)
@@ -188,8 +188,8 @@ func (s *Server) GetContractCode(r *http.Request, req *GetContractCodeRequest, r
 	tracer := telemetry.GetTracer()
 	ctx, span := tracer.Start(ctx, "rpc_get_contract_code")
 	span.SetAttributes(
-		attribute.String("contract.id", req.ContractID),
-		attribute.String("transaction.hash", req.TxHash),
+		telemetry.Attr("contract.id", req.ContractID),
+		telemetry.Attr("transaction.hash", req.TxHash),
 	)
 	defer span.End()
 

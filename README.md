@@ -239,6 +239,17 @@ We are building this open-source to help the entire Stellar community. All contr
 
 ### Code Quality & Linting
 
+## Telemetry and Privacy
+
+Glassbox includes optional telemetry to help diagnose runtime issues. Privacy-preserving defaults and explicit opt-in are enforced:
+
+- **Opt-in by default**: Telemetry is disabled unless explicitly enabled via config or environment.
+- **Config options**: Set `telemetry_enabled` and `telemetry_endpoint` in your Glassbox config (`~/.Glassbox/config.json`), or use the environment variables `GLASSBOX_TELEMETRY` and `GLASSBOX_TELEMETRY_ENDPOINT`.
+- **No secrets**: Identifiers such as transaction hashes, contract IDs, and file paths are sanitized or fingerprinted client-side before export.
+- **Session control**: Run `glassbox telemetry` to view the current state and follow the printed instructions to disable telemetry for your shell session (e.g. `export GLASSBOX_TELEMETRY=false`).
+
+If you have additional privacy concerns, file an issue and we will work with you to provide stricter controls.
+
 This project enforces strict linting rules to maintain code quality. See [docs/STRICT_LINTING.md](docs/STRICT_LINTING.md) for details.
 
 Quick commands:

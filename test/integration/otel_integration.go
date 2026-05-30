@@ -31,13 +31,13 @@ func main() {
 	// Create test spans
 	tracer := telemetry.GetTracer()
 	ctx, rootSpan := tracer.Start(ctx, "integration_test")
-	rootSpan.SetAttributes(attribute.String("test.type", "integration"))
+	rootSpan.SetAttributes(telemetry.Attr("test.type", "integration"))
 	defer rootSpan.End()
 
 	// Simulate nested operations
 	_, childSpan := tracer.Start(ctx, "child_operation")
 	childSpan.SetAttributes(
-		attribute.String("operation.name", "test_operation"),
+		telemetry.Attr("operation.name", "test_operation"),
 		attribute.Int("operation.count", 42),
 	)
 	childSpan.End()

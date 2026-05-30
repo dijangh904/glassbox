@@ -5,6 +5,7 @@ package telemetry
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -51,6 +52,23 @@ func TestGetTracer(t *testing.T) {
 	ctx := context.Background()
 	_, span := tracer.Start(ctx, "test-span")
 	span.End()
+}
+
+func TestSanitizeValueAndAttr(t *testing.T) {
+	// Hash-like key should be fingerprinted, not include raw value
+	raw := "5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
+	sv := SanitizeValue("transaction.hash", raw)
+	if !strings.HasPrefix(sv, "sha256:") {
+		t.Fatalf("expected fingerprint prefix, got: %s", sv)
+	}
+	if strings.Contains(sv, raw[:8]) {
+		t.Fatalf("sanitized value must not contain raw prefix")
+	}
+
+	kv := Attr("transaction.hash", raw)
+	if !strings.HasPrefix(kv.Value.AsString(), "sha256:") {
+		t.Fatalf("Attr did not sanitize value: %v", kv)
+	}
 }
 
 // TestInit_UnreachableCollector proves graceful degradation: with tracing enabled

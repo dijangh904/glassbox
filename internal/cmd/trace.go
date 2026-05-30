@@ -15,13 +15,12 @@ import (
 )
 
 var (
-	traceFile         string
-	traceThemeFlag    string
-	tracePrint        bool
-	traceNoColor      bool
-	traceExportSVG    string
-	traceExportPath   string
-	traceExportFormat string
+	traceFile      string
+	traceThemeFlag string
+	tracePrint     bool
+	traceNoColor   bool
+	traceExportSVG string
+	traceOutputJSON string
 )
 
 var traceCmd = &cobra.Command{
@@ -92,6 +91,19 @@ Example:
 			if len(executionTrace.DiagnosticEvents) == 0 {
 				return errors.WrapValidationError("no diagnostic events found in trace; call graph with gas cannot be generated")
 			}
+
+			// --output-json: write deterministic schema'd JSON export and exit
+			if traceOutputJSON != "" {
+				data, err := executionTrace.ExportJSON("1.0", time.Now())
+				if err != nil {
+					return errors.WrapValidationError(fmt.Sprintf("failed to export trace json: %v", err))
+				}
+				if err := os.WriteFile(traceOutputJSON, data, 0644); err != nil {
+					return errors.WrapValidationError(fmt.Sprintf("failed to save JSON: %v", err))
+				}
+				fmt.Printf("%s Trace exported to: %s\n", visualizer.Symbol("success"), traceOutputJSON)
+				return nil
+			}
 			// Load config to get MaxTraceDepth
 			maxDepth := 50
 
@@ -130,8 +142,7 @@ func init() {
 	traceCmd.Flags().BoolVar(&tracePrint, "print", false, "Print a rich ASCII tree report and exit (non-interactive)")
 	traceCmd.Flags().BoolVar(&traceNoColor, "no-color", false, "Disable ANSI colour output (also honoured via NO_COLOR env var)")
 	traceCmd.Flags().StringVar(&traceExportSVG, "export-svg", "", "Export call graph as SVG to specified file")
-	traceCmd.Flags().StringVar(&traceExportPath, "export", "", "Export trace to HTML or Markdown file")
-	traceCmd.Flags().StringVar(&traceExportFormat, "export-format", "html", "Trace export format (html, markdown, md)")
+	traceCmd.Flags().StringVar(&traceOutputJSON, "output-json", "", "Export trace as deterministic JSON to specified file (includes schema_version)")
 
 	_ = traceCmd.RegisterFlagCompletionFunc("theme", completeThemeFlag)
 

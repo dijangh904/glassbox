@@ -38,6 +38,7 @@ import (
 	"github.com/dotandev/glassbox/internal/watch"
 
 	"github.com/spf13/cobra"
+    "strconv"
 	"github.com/stellar/go-stellar-sdk/xdr"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -119,6 +120,8 @@ Example:
 	cmd.Flags().StringVar(&rpcURLFlag, "rpc-url", "", "Custom Horizon RPC URL to use")
 	cmd.Flags().StringVar(&rpcTokenFlag, "rpc-token", "", "RPC authentication token (can also use GLASSBOX_RPC_TOKEN env var)")
 	cmd.Flags().BoolVar(&snapshotsFlag, "snapshots", false, "Enable simulator snapshot capture (default: disabled)")
+	cmd.Flags().BoolVar(&tracingEnabled, "tracing", false, "Enable OpenTelemetry tracing (overrides config/env)")
+	cmd.Flags().StringVar(&otlpExporterURL, "otlp-url", "", "OTLP exporter URL (can also use GLASSBOX_TELEMETRY_ENDPOINT env var)")
 
 	return cmd
 }
@@ -307,8 +310,25 @@ Local WASM Replay Mode:
 			}
 		}
 
-		// Initialize OpenTelemetry if enabled
-		if tracingEnabled {
+		// Initialize OpenTelemetry if enabled via flag, env, or config (opt-in)
+		telemetryEnabled := tracingEnabled
+		if !telemetryEnabled {
+			if v := os.Getenv("GLASSBOX_TELEMETRY"); v != "" {
+				if b, err := strconv.ParseBool(v); err == nil {
+					telemetryEnabled = b
+				}
+			}
+			if !telemetryEnabled {
+				if cfg, err := config.Load(); err == nil && cfg.TelemetryEnabled {
+					telemetryEnabled = true
+					if otlpExporterURL == "" && cfg.TelemetryEndpoint != "" {
+						otlpExporterURL = cfg.TelemetryEndpoint
+					}
+				}
+			}
+		}
+
+		if telemetryEnabled {
 			cleanup, err := telemetry.Init(ctx, telemetry.Config{
 				Enabled:     true,
 				ExporterURL: otlpExporterURL,
@@ -324,8 +344,8 @@ Local WASM Replay Mode:
 		tracer := telemetry.GetTracer()
 		ctx, span := tracer.Start(ctx, "debug_transaction")
 		span.SetAttributes(
-			attribute.String("transaction.hash", txHash),
-			attribute.String("network", networkFlag),
+			telemetry.Attr("transaction.hash", txHash),
+			telemetry.Attr("network", networkFlag),
 		)
 		defer span.End()
 

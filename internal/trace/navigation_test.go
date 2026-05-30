@@ -1,11 +1,28 @@
-// Copyright 2026 Glassbox Users
-// SPDX-License-Identifier: Apache-2.0
-
 package trace
 
 import (
 	"testing"
+	"time"
 )
+
+func TestExportJSONDeterministic(t *testing.T) {
+    et := NewExecutionTrace("txhash123", 10)
+    et.AddState(ExecutionState{Operation: "op1", EventType: "host_function"})
+    et.AddState(ExecutionState{Operation: "op2", EventType: "contract_call"})
+	fixed := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+
+	a, err := et.ExportJSON("1.0", fixed)
+    if err != nil {
+        t.Fatalf("ExportJSON failed: %v", err)
+    }
+	b, err := et.ExportJSON("1.0", fixed)
+    if err != nil {
+        t.Fatalf("ExportJSON failed second time: %v", err)
+    }
+    if string(a) != string(b) {
+        t.Fatalf("ExportJSON should be deterministic across runs")
+    }
+}
 
 func TestExecutionTrace_Navigation(t *testing.T) {
 	trace := NewExecutionTrace("test-tx-hash", 3)

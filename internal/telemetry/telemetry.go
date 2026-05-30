@@ -5,6 +5,10 @@ package telemetry
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -13,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Config holds OpenTelemetry configuration
@@ -93,4 +98,33 @@ func Init(ctx context.Context, config Config) (func(), error) {
 // GetTracer returns the global tracer instance
 func GetTracer() oteltrace.Tracer {
 	return otel.Tracer("glassbox")
+}
+
+// SanitizeValue returns a privacy-preserving representation for telemetry.
+// Identifiers (hash, tx, contract) are hashed client-side. Paths are reduced
+// to their basename. Long strings are truncated.
+func SanitizeValue(key, v string) string {
+	if v == "" {
+		return ""
+	}
+	lk := strings.ToLower(key)
+	switch {
+	case strings.Contains(lk, "hash") || strings.Contains(lk, "tx") || strings.Contains(lk, "contract"):
+		h := sha256.Sum256([]byte(v))
+		// transmit a short deterministic fingerprint only
+		return fmt.Sprintf("sha256:%x", h)[:32]
+	case strings.Contains(v, string(filepath.Separator)) || strings.Contains(v, "/"):
+		return filepath.Base(v)
+	default:
+		if len(v) > 128 {
+			return v[:128] + "..."
+		}
+		return v
+	}
+}
+
+// Attr returns an attribute.KeyValue with a sanitized value suitable for
+// telemetry export.
+func Attr(key, v string) attribute.KeyValue {
+	return attribute.String(key, SanitizeValue(key, v))
 }

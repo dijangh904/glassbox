@@ -123,9 +123,9 @@ func (c *Client) getTransactionAttempt(ctx context.Context, hash string) (txResp
 	tracer := telemetry.GetTracer()
 	_, span := tracer.Start(ctx, "rpc_get_transaction")
 	span.SetAttributes(
-		attribute.String("transaction.hash", hash),
-		attribute.String("network", string(c.Network)),
-		attribute.String("rpc.url", c.HorizonURL),
+		telemetry.Attr("transaction.hash", hash),
+		telemetry.Attr("network", string(c.Network)),
+		telemetry.Attr("rpc.url", c.HorizonURL),
 	)
 	defer span.End()
 
@@ -238,9 +238,9 @@ func (c *Client) getLedgerHeaderAttempt(ctx context.Context, sequence uint32) (l
 	tracer := telemetry.GetTracer()
 	_, span := tracer.Start(ctx, "rpc_get_ledger_header")
 	span.SetAttributes(
-		attribute.String("network", string(c.Network)),
+		telemetry.Attr("network", string(c.Network)),
 		attribute.Int("ledger.sequence", int(sequence)),
-		attribute.String("rpc.url", c.HorizonURL),
+		telemetry.Attr("rpc.url", c.HorizonURL),
 	)
 	defer span.End()
 
@@ -263,7 +263,7 @@ func (c *Client) getLedgerHeaderAttempt(ctx context.Context, sequence uint32) (l
 	response := FromHorizonLedger(ledger)
 
 	span.SetAttributes(
-		attribute.String("ledger.hash", response.Hash),
+		telemetry.Attr("ledger.hash", response.Hash),
 		attribute.Int("ledger.protocol_version", int(response.ProtocolVersion)),
 		attribute.Int("ledger.tx_count", int(response.SuccessfulTxCount+response.FailedTxCount)),
 	)

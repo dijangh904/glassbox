@@ -195,8 +195,8 @@ func (s *wsStreamer) Stream(ctx context.Context, hash string) (<-chan TxStatus, 
 		tracer := telemetry.GetTracer()
 		sCtx, span := tracer.Start(ctx, "rpc_tx_stream_ws")
 		span.SetAttributes(
-			attribute.String("transaction.hash", hash),
-			attribute.String("rpc.url", s.wsURL),
+			telemetry.Attr("transaction.hash", hash),
+			telemetry.Attr("rpc.url", s.wsURL),
 		)
 		defer span.End()
 
@@ -291,8 +291,8 @@ func (s *pollingStreamer) Stream(ctx context.Context, hash string) (<-chan TxSta
 		tracer := telemetry.GetTracer()
 		sCtx, span := tracer.Start(ctx, "rpc_tx_stream_poll")
 		span.SetAttributes(
-			attribute.String("transaction.hash", hash),
-			attribute.String("rpc.url", s.client.SorobanURL),
+			telemetry.Attr("transaction.hash", hash),
+			telemetry.Attr("rpc.url", s.client.SorobanURL),
 		)
 		defer span.End()
 

@@ -228,7 +228,7 @@ func (c *Client) getLedgerEntriesConcurrent(ctx context.Context, batches [][]str
 	_, span := tracer.Start(ctx, "rpc_get_ledger_entries_concurrent")
 	span.SetAttributes(
 		attribute.Int("batch.count", len(batches)),
-		attribute.String("network", string(c.Network)),
+		telemetry.Attr("network", string(c.Network)),
 	)
 	defer span.End()
 

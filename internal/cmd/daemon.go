@@ -13,8 +13,10 @@ import (
 	"github.com/dotandev/glassbox/internal/daemon"
 	"github.com/dotandev/glassbox/internal/errors"
 	"github.com/dotandev/glassbox/internal/rpc"
+	"github.com/dotandev/glassbox/internal/config"
 	"github.com/dotandev/glassbox/internal/telemetry"
 	"github.com/spf13/cobra"
+	"strconv"
 )
 
 var (
@@ -42,20 +44,37 @@ Example:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 
-		// Initialize OpenTelemetry if enabled
-		var cleanup func()
-		if daemonTracing {
-			var err error
-			cleanup, err = telemetry.Init(ctx, telemetry.Config{
-				Enabled:     true,
-				ExporterURL: daemonOTLPURL,
-				ServiceName: "Glassbox-daemon",
-			})
-			if err != nil {
-				return errors.WrapValidationError(fmt.Sprintf("failed to initialize telemetry: %v", err))
+			// Initialize OpenTelemetry if enabled via flag, env, or config (opt-in)
+			telemetryEnabled := daemonTracing
+			if !telemetryEnabled {
+				if v := os.Getenv("GLASSBOX_TELEMETRY"); v != "" {
+					if b, err := strconv.ParseBool(v); err == nil {
+						telemetryEnabled = b
+					}
+				}
+				if !telemetryEnabled {
+					if cfg, err := config.Load(); err == nil && cfg.TelemetryEnabled {
+						telemetryEnabled = true
+						if daemonOTLPURL == "" && cfg.TelemetryEndpoint != "" {
+							daemonOTLPURL = cfg.TelemetryEndpoint
+						}
+					}
+				}
 			}
-			defer cleanup()
-		}
+
+			var cleanup func()
+			if telemetryEnabled {
+				var err error
+				cleanup, err = telemetry.Init(ctx, telemetry.Config{
+					Enabled:     true,
+					ExporterURL: daemonOTLPURL,
+					ServiceName: "Glassbox-daemon",
+				})
+				if err != nil {
+					return errors.WrapValidationError(fmt.Sprintf("failed to initialize telemetry: %v", err))
+				}
+				defer cleanup()
+			}
 
 		// Validate network
 		switch rpc.Network(daemonNetwork) {
