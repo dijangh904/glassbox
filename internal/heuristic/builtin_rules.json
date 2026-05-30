@@ -68,7 +68,7 @@
         "memory limit exceeded",
         "error(budget, mem"
       ],
-      "template": "Transaction {{.TxHash}} failed on {{.Network}} because it exhausted both the CPU instruction budget and the memory allocation budget during contract execution."
+      "template": "Transaction {{.TxHash}} failed on {{.Network}} because it exhausted both the CPU instruction budget and the memory allocation budget during contract execution. Budget used: CPU {{.CPUUsed}}/{{.CPULimit}} ({{printf \"%.1f\" .CPUUsagePercent}}%), Memory {{.MemUsed}}/{{.MemLimit}} ({{printf \"%.1f\" .MemoryUsagePercent}}%). {{.Remediation}}"
     },
     {
       "id": "budget-cpu",
@@ -81,7 +81,7 @@
         "cpu limit exceeded",
         "error(budget, cpu"
       ],
-      "template": "Transaction {{.TxHash}} failed on {{.Network}} because the contract execution exceeded the Soroban CPU instruction budget."
+      "template": "Transaction {{.TxHash}} failed on {{.Network}} because the contract execution exceeded the Soroban CPU instruction budget. Budget used: {{.CPUUsed}}/{{.CPULimit}} instructions ({{printf \"%.1f\" .CPUUsagePercent}}%). {{.Remediation}}"
     },
     {
       "id": "budget-memory",
@@ -94,7 +94,7 @@
         "memory limit exceeded",
         "error(budget, mem"
       ],
-      "template": "Transaction {{.TxHash}} failed on {{.Network}} because the contract execution exceeded the Soroban memory allocation budget."
+      "template": "Transaction {{.TxHash}} failed on {{.Network}} because the contract execution exceeded the Soroban memory allocation budget. Budget used: {{.MemUsed}}/{{.MemLimit}} bytes ({{printf \"%.1f\" .MemoryUsagePercent}}%). {{.Remediation}}"
     },
     {
       "id": "insufficient-balance",

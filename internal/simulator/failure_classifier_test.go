@@ -11,7 +11,6 @@ import (
 
 // ptr helpers
 func strPtr(s string) *string { return &s }
-func uint32Ptr(v uint32) *uint32 { return &v }
 func uint64Ptr(v uint64) *uint64 { return &v }
 
 // ─── ClassifyFailure nil / success guards ────────────────────────────────────
@@ -373,6 +372,63 @@ func TestClassifyFailure_Unknown_EmptyError(t *testing.T) {
 	d := ClassifyFailure(resp)
 	if d == nil || d.Category != FailureUnknown {
 		t.Fatalf("expected %s, got %v", FailureUnknown, d)
+	}
+}
+
+// ─── Hot spot identification for budget failures ───────────────────────────────────
+
+func TestClassifyFailure_CPUBudget_HotSpotFromSourceLocation(t *testing.T) {
+	resp := &SimulationResponse{
+		Status:    "error",
+		ErrorCode: "ERR_CPU_LIMIT_EXCEEDED",
+		Error:     "cpu limit exceeded",
+		BudgetUsage: &BudgetUsage{
+			CPUInstructions:    100_000_000,
+			CPULimit:           100_000_000,
+			CPUUsagePercent:    100.0,
+			MemoryBytes:        10_000_000,
+			MemoryLimit:        50_000_000,
+			MemoryUsagePercent: 20.0,
+		},
+		SourceLocation: &SourceLocation{
+			File: "contract/src/lib.rs",
+			Line: 42,
+		},
+		WasmOffset: uint64Ptr(1234),
+	}
+	d := ClassifyFailure(resp)
+	if d == nil {
+		t.Fatal("expected non-nil diagnostic")
+	}
+	if d.BudgetDetails == nil || d.BudgetDetails.HotSpotHint == "" {
+		t.Errorf("expected HotSpotHint to be populated, got: %v", d.BudgetDetails)
+	}
+}
+
+func TestClassifyFailure_MemoryBudget_HotSpotFromDiagnosticEvents(t *testing.T) {
+	contractID := "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"
+	resp := &SimulationResponse{
+		Status:    "error",
+		ErrorCode: "ERR_MEMORY_LIMIT_EXCEEDED",
+		Error:     "memory limit exceeded",
+		BudgetUsage: &BudgetUsage{
+			CPUInstructions:    50_000_000,
+			CPULimit:           100_000_000,
+			CPUUsagePercent:    50.0,
+			MemoryBytes:        50_000_000,
+			MemoryLimit:        50_000_000,
+			MemoryUsagePercent: 100.0,
+		},
+		DiagnosticEvents: []DiagnosticEvent{
+			{EventType: "contract", ContractID: strPtr(contractID)},
+		},
+	}
+	d := ClassifyFailure(resp)
+	if d == nil {
+		t.Fatal("expected non-nil diagnostic")
+	}
+	if d.BudgetDetails == nil || d.BudgetDetails.HotSpotHint == "" {
+		t.Errorf("expected HotSpotHint to be populated, got: %v", d.BudgetDetails)
 	}
 }
 

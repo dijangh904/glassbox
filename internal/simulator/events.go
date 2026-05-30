@@ -19,6 +19,7 @@ type DiagnosticEvent struct {
 	WasmInstruction          *string  `json:"wasm_instruction,omitempty"`
 	CPU                      *uint64  `json:"cpu,omitempty"`
 	Memory                   *uint64  `json:"mem,omitempty"`
+	FuncName                 *string  `json:"func_name,omitempty"`
 }
 
 // ParseData decodes the base64-encoded XDR Data into an xdr.ScVal

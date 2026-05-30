@@ -55,6 +55,9 @@ var (
 	verbose              bool
 	wasmPath             string
 	args                 []string
+	xdrFileFlag          string
+	jsonFileFlag         string
+	resultMetaFileFlag   string
 	mockLedgerEntryFlags []string
 	mockLedgerManifest   string
 	themeFlag            string
@@ -218,8 +221,24 @@ Local WASM Replay Mode:
 			return errors.WrapValidationError("--hot-reload requires --wasm")
 		}
 
-		// Demo mode, local WASM replay, and offline registry load don't need a
-		// transaction hash or network connectivity.
+		// Demo mode, local WASM replay, local envelope file input, and offline
+		// registry load don't need a transaction hash or network connectivity.
+		if xdrFileFlag != "" && jsonFileFlag != "" {
+			return errors.WrapValidationError("only one of --xdr-file or --json-file may be specified")
+		}
+		if xdrFileFlag != "" || jsonFileFlag != "" {
+			if len(args) > 0 {
+				return errors.WrapValidationError("cannot specify both a transaction hash and a local envelope file")
+			}
+			if watchFlag {
+				return errors.WrapValidationError("--watch cannot be used with local envelope input")
+			}
+			if compareNetworkFlag != "" {
+				return errors.WrapValidationError("--compare-network cannot be used with local envelope input")
+			}
+			return nil
+		}
+
 		if demoMode || wasmPath != "" || loadSnapshotsFlag != "" {
 			return nil
 		}
@@ -293,9 +312,12 @@ Local WASM Replay Mode:
 			return runLocalWasmReplay()
 		}
 
-		// Network transaction replay mode
+		localEnvelopeMode := xdrFileFlag != "" || jsonFileFlag != ""
 		ctx := cmd.Context()
-		txHash := cmdArgs[0]
+		txHash := ""
+		if !localEnvelopeMode {
+			txHash = cmdArgs[0]
+		}
 
 		// Load persisted viewer state for this transaction (best-effort).
 		var uiStore *session.UIStateStore
@@ -386,9 +408,15 @@ Local WASM Replay Mode:
 			fmt.Println("🚫 Cache disabled by --no-cache flag")
 		}
 
-		_ = client.CheckStaleness(ctx, networkFlag)
+		if !localEnvelopeMode {
+			_ = client.CheckStaleness(ctx, networkFlag)
+		}
 
-		fmt.Printf("Debugging transaction: %s\n", txHash)
+		if localEnvelopeMode {
+			fmt.Println("Debugging local transaction envelope")
+		} else {
+			fmt.Printf("Debugging transaction: %s\n", txHash)
+		}
 		fmt.Printf("Primary Network: %s\n", networkFlag)
 		if compareNetworkFlag != "" {
 			fmt.Printf("Comparing against Network: %s\n", compareNetworkFlag)
@@ -429,13 +457,32 @@ Local WASM Replay Mode:
 			spinner.StopWithMessage(fmt.Sprintf("Transaction reached %s. Starting debug...", strings.ToLower(finalStatus.Status)))
 		}
 
-		fmt.Printf("Fetching transaction: %s\n", txHash)
-		resp, err := client.GetTransaction(ctx, txHash)
-		if err != nil {
-			return errors.WrapRPCConnectionFailed(err)
-		}
+		var resp *rpc.TransactionResponse
+		var localInputNetwork string
+		if localEnvelopeMode {
+			envelopeXdr, resultMetaXdr, fileNetwork, err := loadTransactionEnvelopeInput(xdrFileFlag, jsonFileFlag, resultMetaFileFlag)
+			if err != nil {
+				return err
+			}
+			resp = &rpc.TransactionResponse{EnvelopeXdr: envelopeXdr, ResultMetaXdr: resultMetaXdr}
+			localInputNetwork = fileNetwork
+			if localInputNetwork != "" && !cmd.Flags().Changed("network") {
+				networkFlag = localInputNetwork
+			}
+			fmt.Printf("Loaded local transaction envelope from %s\n", func() string {
+				if xdrFileFlag != "" { return xdrFileFlag }
+				return jsonFileFlag
+			}())
+			fmt.Printf("Envelope size: %d bytes\n", len(resp.EnvelopeXdr))
+		} else {
+			fmt.Printf("Fetching transaction: %s\n", txHash)
+			resp, err = client.GetTransaction(ctx, txHash)
+			if err != nil {
+				return errors.WrapRPCConnectionFailed(err)
+			}
 
-		fmt.Printf("Transaction fetched successfully. Envelope size: %d bytes\n", len(resp.EnvelopeXdr))
+			fmt.Printf("Transaction fetched successfully. Envelope size: %d bytes\n", len(resp.EnvelopeXdr))
+		}
 
 		// Extract ledger keys for replay
 		keys, err := extractLedgerKeys(resp.ResultMetaXdr)
@@ -501,10 +548,16 @@ Local WASM Replay Mode:
 					// Try to extract from metadata first, fall back to fetching
 					ledgerEntries, err = rpc.ExtractLedgerEntriesFromMeta(resp.ResultMetaXdr)
 					if err != nil {
-						logger.Logger.Warn("Failed to extract ledger entries from metadata, fetching from network", "error", err)
-						ledgerEntries, err = client.GetLedgerEntries(ctx, keys)
-						if err != nil {
-							return errors.WrapRPCConnectionFailed(err)
+						logger.Logger.Warn("Failed to extract ledger entries from metadata")
+						if localEnvelopeMode {
+							logger.Logger.Info("Offline local envelope mode: skipping network ledger fetch")
+							ledgerEntries = map[string]string{}
+						} else {
+							logger.Logger.Warn("Failed to extract ledger entries from metadata, fetching from network", "error", err)
+							ledgerEntries, err = client.GetLedgerEntries(ctx, keys)
+							if err != nil {
+								return errors.WrapRPCConnectionFailed(err)
+							}
 						}
 					} else {
 						logger.Logger.Info("Extracted ledger entries for simulation", "count", len(ledgerEntries))
@@ -553,7 +606,7 @@ Local WASM Replay Mode:
 				}
 
 				// Fetch contract bytecode on demand for any contract calls in the trace; cache via RPC client
-				if client != nil && simResp != nil && len(simResp.DiagnosticEvents) > 0 {
+				if !localEnvelopeMode && client != nil && simResp != nil && len(simResp.DiagnosticEvents) > 0 {
 					contractIDs := collectContractIDsFromDiagnosticEvents(simResp.DiagnosticEvents)
 					if len(contractIDs) > 0 {
 						_, _ = rpc.FetchBytecodeForTraceContractCalls(ctx, client, contractIDs, nil)
@@ -1141,6 +1194,10 @@ func drainLatestReloadEvent(events <-chan watch.ReloadEvent, lastAppliedHash str
 }
 
 func extractLedgerKeys(metaXdr string) ([]string, error) {
+	if strings.TrimSpace(metaXdr) == "" {
+		return nil, nil
+	}
+
 	data, err := base64.StdEncoding.DecodeString(metaXdr)
 	if err != nil {
 		return nil, err
@@ -1281,6 +1338,10 @@ func printSimulationResult(network string, res *simulator.SimulationResponse) {
 		fmt.Printf("\n  %s  %s\n", visualizer.Error(), visualizer.Colorize(res.Error, "red"))
 	}
 
+	if res.Status != "success" {
+		printFailureDiagnostic(res)
+	}
+
 	// Stack trace with resolved source locations
 	if res.StackTrace != nil && len(res.StackTrace.Frames) > 0 {
 		printWasmBacktrace(res.StackTrace)
@@ -1387,6 +1448,147 @@ func printSimulationResult(network string, res *simulator.SimulationResponse) {
 }
 
 // budgetIndicator returns a color name and warning suffix for a budget usage percentage.
+func printFailureDiagnostic(res *simulator.SimulationResponse) {
+	if res == nil || res.Status == "success" {
+		return
+	}
+
+	diagnostic := simulator.ClassifyFailure(res)
+	if diagnostic == nil {
+		return
+	}
+
+	fmt.Printf("\n  %s  Diagnostic: %s\n",
+		visualizer.Colorize("──", "bold"),
+		visualizer.Colorize(string(diagnostic.Category), "yellow"),
+	)
+	fmt.Printf("    %s\n", diagnostic.Summary)
+
+	if diagnostic.ErrorCode != "" {
+		fmt.Printf("    Error Code: %s\n", diagnostic.ErrorCode)
+	}
+
+	if details := diagnostic.BudgetDetails; details != nil {
+		fmt.Printf("    Budget: CPU %d/%d (%.1f%%), Memory %d/%d (%.1f%%)\n",
+			details.CPUInstructions, details.CPULimit, details.CPUUsagePercent,
+			details.MemoryBytes, details.MemoryLimit, details.MemoryUsagePercent,
+		)
+		if details.CPUExhausted {
+			fmt.Printf("    %s CPU budget exhausted\n", visualizer.Warning())
+		}
+		if details.MemoryExhausted {
+			fmt.Printf("    %s Memory budget exhausted\n", visualizer.Warning())
+		}
+		if details.HotSpotHint != "" {
+			fmt.Printf("    Hot spot: %s\n", details.HotSpotHint)
+		}
+	}
+
+	if res.SourceLocation != nil {
+		fmt.Printf("    Likely source location: %s:%d\n", res.SourceLocation.File, res.SourceLocation.Line)
+	}
+
+	if hint := failureRemediationHint(res); hint != "" {
+		fmt.Printf("    Suggested fix: %s\n", hint)
+	}
+}
+
+func failureRemediationHint(res *simulator.SimulationResponse) string {
+	if res == nil {
+		return ""
+	}
+
+	if res.BudgetUsage != nil {
+		if res.BudgetUsage.CPUUsagePercent >= 100 {
+			return "Optimize contract logic and reduce CPU-heavy loops or limit host function calls to lower instruction usage."
+		}
+		if res.BudgetUsage.MemoryUsagePercent >= 100 {
+			return "Reduce temporary memory allocation and heap usage in contract code to stay under the Soroban memory limit."
+		}
+	}
+
+	lowerError := strings.ToLower(res.Error)
+	if strings.Contains(lowerError, "auth") || strings.Contains(lowerError, "require_auth") {
+		return "Ensure the transaction includes all required signatures and authorization entries."
+	}
+	if strings.Contains(lowerError, "invalid") || strings.Contains(lowerError, "malformed") {
+		return "Verify the transaction envelope and argument types for correctness."
+	}
+	return ""
+}
+
+func loadTransactionEnvelopeInput(xdrPath, jsonPath, resultMetaPath string) (string, string, string, error) {
+	if xdrPath != "" && jsonPath != "" {
+		return "", "", "", errors.WrapValidationError("only one of --xdr-file or --json-file may be specified")
+	}
+
+	var envelopeXdr string
+	var resultMetaXdr string
+	var network string
+
+	if xdrPath != "" {
+		data, err := os.ReadFile(xdrPath)
+		if err != nil {
+			return "", "", "", errors.WrapValidationError(fmt.Sprintf("failed to read XDR file %s: %v", xdrPath, err))
+		}
+		envelopeXdr = strings.TrimSpace(string(data))
+		if _, err := base64.StdEncoding.DecodeString(envelopeXdr); err != nil {
+			return "", "", "", errors.WrapValidationError(fmt.Sprintf("invalid base64 XDR in %s: %v", xdrPath, err))
+		}
+	}
+
+	if jsonPath != "" {
+		data, err := os.ReadFile(jsonPath)
+		if err != nil {
+			return "", "", "", errors.WrapValidationError(fmt.Sprintf("failed to read JSON envelope file %s: %v", jsonPath, err))
+		}
+		var envelope struct {
+			Network       string `json:"network"`
+			EnvelopeXDR   string `json:"envelope_xdr"`
+			ResultMetaXDR string `json:"result_meta_xdr"`
+		}
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			return "", "", "", errors.WrapValidationError(fmt.Sprintf("failed to parse JSON envelope file %s: %v", jsonPath, err))
+		}
+		envelopeXdr = strings.TrimSpace(envelope.EnvelopeXDR)
+		network = strings.TrimSpace(envelope.Network)
+		resultMetaXdr = strings.TrimSpace(envelope.ResultMetaXDR)
+		if envelopeXdr == "" {
+			return "", "", "", errors.WrapValidationError(fmt.Sprintf("JSON envelope file %s must include envelope_xdr", jsonPath))
+		}
+	}
+
+	if resultMetaPath != "" {
+		data, err := os.ReadFile(resultMetaPath)
+		if err != nil {
+			return "", "", "", errors.WrapValidationError(fmt.Sprintf("failed to read result meta file %s: %v", resultMetaPath, err))
+		}
+		trimmed := strings.TrimSpace(string(data))
+		if strings.HasPrefix(trimmed, "{") {
+			var meta struct {
+				ResultMetaXdr string `json:"result_meta_xdr"`
+			}
+			if err := json.Unmarshal(data, &meta); err != nil {
+				return "", "", "", errors.WrapValidationError(fmt.Sprintf("failed to parse JSON result meta file %s: %v", resultMetaPath, err))
+			}
+			resultMetaXdr = strings.TrimSpace(meta.ResultMetaXdr)
+		} else {
+			resultMetaXdr = trimmed
+		}
+		if resultMetaXdr != "" {
+			if _, err := base64.StdEncoding.DecodeString(resultMetaXdr); err != nil {
+				return "", "", "", errors.WrapValidationError(fmt.Sprintf("invalid base64 result metadata in %s: %v", resultMetaPath, err))
+			}
+		}
+	}
+
+	if envelopeXdr == "" {
+		return "", "", "", errors.WrapValidationError("missing local envelope input; provide --xdr-file or --json-file")
+	}
+
+	return envelopeXdr, resultMetaXdr, network, nil
+}
+
 func budgetIndicator(pct float64) (color, suffix string) {
 	switch {
 	case pct >= 95.0:
@@ -1689,6 +1891,9 @@ func init() {
 	debugCmd.Flags().StringSliceVar(&mockLedgerEntryFlags, "mock-ledger-entry", []string{}, "Override ledger entries before simulation using key:value; repeatable")
 	debugCmd.Flags().StringVar(&mockLedgerManifest, "mock-ledger-manifest", "", "Path to a JSON manifest containing ledger_entries for override state")
 	debugCmd.Flags().BoolVar(&noCacheFlag, "no-cache", false, "Disable local ledger state caching")
+	debugCmd.Flags().StringVar(&xdrFileFlag, "xdr-file", "", "Load transaction envelope from a local XDR file or base64-encoded XDR")
+	debugCmd.Flags().StringVar(&jsonFileFlag, "json-file", "", "Load transaction envelope from a local JSON file containing envelope_xdr")
+	debugCmd.Flags().StringVar(&resultMetaFileFlag, "result-meta-file", "", "Load transaction result metadata from a local XDR or JSON file")
 	debugCmd.Flags().BoolVar(&demoMode, "demo", false, "Print sample output (no network) - for testing color detection")
 	debugCmd.Flags().BoolVar(&watchFlag, "watch", false, "Poll for transaction on-chain before debugging")
 	debugCmd.Flags().IntVar(&watchTimeoutFlag, "watch-timeout", 30, "Timeout in seconds for watch mode")

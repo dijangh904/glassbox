@@ -22,7 +22,35 @@ func LoadRulesFromFile(path string) ([]*Rule, error) {
 	}
 
 	ext := strings.ToLower(filepath.Ext(path))
-	return rulesFromBytes(data, ext, path)
+	rules, err := rulesFromBytes(data, ext, path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check for duplicate IDs within this file
+	seen := make(map[string]struct{})
+	for _, r := range rules {
+		if _, ok := seen[r.ID]; ok {
+			return nil, fmt.Errorf("duplicate rule ID %q in file %s", r.ID, path)
+		}
+		seen[r.ID] = struct{}{}
+	}
+
+	return rules, nil
+}
+
+// LoadRulesFromFiles loads rules from an explicit list of file paths and
+// returns the compiled rules. Each file is loaded independently.
+func LoadRulesFromFiles(paths []string) (*RuleSet, error) {
+	var allRules []*Rule
+	for _, p := range paths {
+		rules, err := LoadRulesFromFile(p)
+		if err != nil {
+			return nil, err
+		}
+		allRules = append(allRules, rules...)
+	}
+	return buildRuleSet(allRules)
 }
 
 // LoadRulesFromDir loads all .json, .yaml, and .yml files from dir and merges
@@ -51,20 +79,6 @@ func LoadRulesFromDir(dir string) (*RuleSet, error) {
 		allRules = append(allRules, rules...)
 	}
 
-	return buildRuleSet(allRules)
-}
-
-// LoadRulesFromFiles loads rules from an explicit list of file paths and
-// merges them into a single sorted RuleSet.
-func LoadRulesFromFiles(paths []string) (*RuleSet, error) {
-	var allRules []*Rule
-	for _, p := range paths {
-		rules, err := LoadRulesFromFile(p)
-		if err != nil {
-			return nil, err
-		}
-		allRules = append(allRules, rules...)
-	}
 	return buildRuleSet(allRules)
 }
 
