@@ -62,6 +62,13 @@ var validNetworks = map[string]bool{
 type Config struct {
 	RpcUrl            string   `json:"rpc_url,omitempty"`
 	RpcUrls           []string `json:"rpc_urls,omitempty"`
+	// SorobanRpcUrls holds multiple Soroban RPC endpoints for adaptive failover.
+	// When set, these are used for all Soroban JSON-RPC calls (getLedgerEntries,
+	// simulateTransaction, getHealth) instead of RpcUrl/RpcUrls.
+	SorobanRpcUrls    []string `json:"soroban_rpc_urls,omitempty"`
+	// FailoverStrategy controls how the adaptive selector picks among endpoints.
+	// Valid values: "weighted" (default), "sticky", "round_robin".
+	FailoverStrategy  string   `json:"failover_strategy,omitempty"`
 	Network           Network  `json:"network,omitempty"`
 	NetworkPassphrase string   `json:"network_passphrase,omitempty"`
 	SimulatorPath     string   `json:"simulator_path,omitempty"`
@@ -331,6 +338,12 @@ func (envParser) Parse(cfg *Config) error {
 	}
 	if v := os.Getenv("GLASSBOX_RPC_URLS"); v != "" {
 		cfg.RpcUrls = splitAndTrim(v)
+	}
+	if v := os.Getenv("GLASSBOX_SOROBAN_RPC_URLS"); v != "" {
+		cfg.SorobanRpcUrls = splitAndTrim(v)
+	}
+	if v := os.Getenv("GLASSBOX_FAILOVER_STRATEGY"); v != "" {
+		cfg.FailoverStrategy = v
 	}
 	if v := os.Getenv("GLASSBOX_FAILURE_THRESHOLD"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

@@ -20,6 +20,7 @@ type clientBuilder struct {
 	horizonURL       string
 	sorobanURL       string
 	altURLs          []string
+	sorobanAltURLs   []string
 	cacheEnabled     bool
 	methodTelemetry  MethodTelemetry
 	config           *NetworkConfig
@@ -29,6 +30,7 @@ type clientBuilder struct {
 	loggingEnabled   bool
 	failureThreshold int
 	retryTimeout     int
+	failoverPolicy   *FailoverPolicy
 }
 
 const defaultHTTPTimeout = 15 * time.Second
@@ -188,6 +190,35 @@ func WithCircuitBreakerTimeout(timeout int) ClientOption {
 	}
 }
 
+// WithSorobanAltURLs configures multiple Soroban RPC endpoints for adaptive failover.
+// The first URL in the list is used as the primary endpoint. When a request fails,
+// the client selects the next endpoint according to the active FailoverPolicy.
+// All URLs must be valid http/https URLs.
+func WithSorobanAltURLs(urls []string) ClientOption {
+	return func(b *clientBuilder) error {
+		for _, u := range urls {
+			if err := isValidURL(u); err != nil {
+				return errors.WrapValidationError(fmt.Sprintf("invalid URL in sorobanAltURLs: %v", err))
+			}
+		}
+		if len(urls) > 0 {
+			b.sorobanAltURLs = urls
+			b.sorobanURL = urls[0]
+		}
+		return nil
+	}
+}
+
+// WithFailoverPolicy sets a custom FailoverPolicy for Soroban RPC endpoint selection.
+// Use this to override the default weighted strategy, degraded threshold, or recovery
+// probe interval. If not called, DefaultFailoverPolicy() is used.
+func WithFailoverPolicy(policy FailoverPolicy) ClientOption {
+	return func(b *clientBuilder) error {
+		b.failoverPolicy = &policy
+		return nil
+	}
+}
+
 func NewClient(opts ...ClientOption) (*Client, error) {
 	builder := newBuilder()
 
@@ -271,6 +302,11 @@ func (b *clientBuilder) build() (*Client, error) {
 		b.altURLs = []string{b.horizonURL}
 	}
 
+	// If no explicit Soroban alt URLs were provided, seed from the primary Soroban URL.
+	if len(b.sorobanAltURLs) == 0 {
+		b.sorobanAltURLs = []string{b.sorobanURL}
+	}
+
 	if b.httpClient == nil {
 		mws := b.middlewares
 		if b.loggingEnabled {
@@ -281,6 +317,14 @@ func (b *clientBuilder) build() (*Client, error) {
 		b.httpClient = createHTTPClient(b.token, b.requestTimeout, mws...)
 	}
 
+	policy := DefaultFailoverPolicy()
+	if b.failoverPolicy != nil {
+		policy = *b.failoverPolicy
+	}
+
+	hc := NewHealthCollector()
+	selector := NewEndpointSelector(policy, hc)
+
 	return &Client{
 		HorizonURL: b.horizonURL,
 		Horizon: &horizonclient.Client{
@@ -290,6 +334,7 @@ func (b *clientBuilder) build() (*Client, error) {
 		Network:          b.network,
 		SorobanURL:       b.sorobanURL,
 		AltURLs:          b.altURLs,
+		SorobanAltURLs:   b.sorobanAltURLs,
 		httpClient:       b.httpClient,
 		token:            b.token,
 		Config:           *b.config,
@@ -300,6 +345,8 @@ func (b *clientBuilder) build() (*Client, error) {
 		FailureThreshold: b.failureThreshold,
 		RetryTimeout:     b.retryTimeout,
 		middlewares:      b.middlewares,
-		healthCollector:  NewHealthCollector(),
+		healthCollector:  hc,
+		selector:         selector,
+		failoverPolicy:   policy,
 	}, nil
 }

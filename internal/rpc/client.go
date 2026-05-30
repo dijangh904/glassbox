@@ -39,6 +39,11 @@ type Client struct {
 	Network          Network
 	SorobanURL       string
 	AltURLs          []string
+	// SorobanAltURLs holds the full list of Soroban RPC endpoints available for
+	// failover. When non-empty, the adaptive selector uses this list instead of
+	// AltURLs for Soroban-specific calls (getLedgerEntries, simulateTransaction,
+	// getHealth, etc.).
+	SorobanAltURLs   []string
 	currIndex        int
 	mu               sync.RWMutex
 	httpClient       HTTPClient
@@ -54,8 +59,12 @@ type Client struct {
 	// rotateCount tracks how many times rotateURL has successfully switched
 	// the active provider.  This is useful for metrics/observability when the
 	// client is operating in a multi‑URL failover configuration.
-	rotateCount     int
-	healthCollector *HealthCollector
+	rotateCount      int
+	healthCollector  *HealthCollector
+	// selector drives adaptive endpoint selection for Soroban RPC calls.
+	selector         *EndpointSelector
+	// failoverPolicy is the active policy used by the selector.
+	failoverPolicy   FailoverPolicy
 }
 
 func (c *Client) startMethodTimer(ctx context.Context, method string, attributes map[string]string) MethodTimer {

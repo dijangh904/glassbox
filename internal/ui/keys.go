@@ -22,6 +22,10 @@ const (
 	KeyQuit
 	KeySlash
 	KeyEscape
+	KeyNextMatch   // 'n' — next search match
+	KeyPrevMatch   // 'N' — previous search match
+	KeyFilterToggle // Ctrl-F — toggle filter mode
+	KeyBackspace
 )
 
 func (k Key) String() string {
@@ -44,6 +48,14 @@ func (k Key) String() string {
 		return "/"
 	case KeyEscape:
 		return "Esc"
+	case KeyNextMatch:
+		return "n"
+	case KeyPrevMatch:
+		return "N"
+	case KeyFilterToggle:
+		return "Ctrl-F"
+	case KeyBackspace:
+		return "Backspace"
 	default:
 		return "?"
 	}
@@ -51,7 +63,7 @@ func (k Key) String() string {
 
 // KeyHelp returns a compact one-line help string for the status bar.
 func KeyHelp() string {
-	return "Tab:switch-pane  ↑↓:navigate  Enter:expand  q:quit  /:search"
+	return "Tab:pane  ↑↓:nav  Enter:expand  /:search  n/N:match  Ctrl-F:filter  q:quit"
 }
 
 type KeyReader struct {
@@ -86,6 +98,14 @@ func (kr *KeyReader) Read() (Key, error) {
 		return KeyRight, nil
 	case '/':
 		return KeySlash, nil
+	case 'n':
+		return KeyNextMatch, nil
+	case 'N':
+		return KeyPrevMatch, nil
+	case 0x06: // Ctrl-F
+		return KeyFilterToggle, nil
+	case 0x7f, 0x08: // DEL / Backspace
+		return KeyBackspace, nil
 	case 0x1b: // ESC — may be start of an ANSI escape sequence
 		return kr.readEscape()
 	case 0x03: // Ctrl-C

@@ -6,8 +6,23 @@
 # RPC URL for the Stellar network (single URL)
 rpc_url = "https://soroban-testnet.stellar.org"
 
-# Multi-RPC URLs for automatic fallback (array syntax)
-# rpc_urls = ["https://rpc1.stellar.org", "https://rpc2.stellar.org"]
+# Multi-RPC URLs for automatic failover (array syntax).
+# When more than one URL is listed, Glassbox uses an adaptive failover layer
+# that tracks the health of each endpoint and routes requests to the healthiest
+# one.  The first URL is the primary; the rest are fallbacks.
+# rpc_urls = [
+#   "https://soroban-testnet.stellar.org",
+#   "https://rpc2.example.com",
+#   "https://rpc3.example.com"
+# ]
+
+# Soroban-specific RPC URLs for adaptive failover.
+# Use this when your Soroban RPC endpoints differ from your Horizon endpoints.
+# Supports the same weighted/sticky/round-robin strategies as rpc_urls.
+# soroban_rpc_urls = [
+#   "https://soroban-testnet.stellar.org",
+#   "https://soroban-backup.example.com"
+# ]
 
 # Network: public, testnet, futurenet, or standalone
 network = "testnet"
@@ -27,14 +42,33 @@ log_level = "info"
 # Default is 50.
 max_trace_depth = 50
 
-# Circuit Breaker Configuration
-# failure_threshold: number of failures before the circuit breaker opens.
-# Default is 5.
+# ── Circuit Breaker / Failover Configuration ────────────────────────────────
+#
+# failure_threshold: number of consecutive failures before an endpoint is
+# marked degraded and deprioritised by the adaptive selector.  Default: 5.
 # failure_threshold = 5
-
-# retry_timeout: duration in seconds to wait before retrying a failed endpoint.
-# Default is 60.
+#
+# retry_timeout: seconds to wait before a degraded endpoint is eligible for
+# re-probing.  Default: 60.
 # retry_timeout = 60
+#
+# Failover strategy for Soroban RPC endpoint selection:
+#   "weighted"    – probabilistic selection proportional to health score
+#                   (default; healthy endpoints get more traffic)
+#   "sticky"      – always use the healthiest endpoint; only switch on failure
+#   "round_robin" – cycle through all healthy endpoints in order
+# failover_strategy = "weighted"
+#
+# ── Replay State Assembly ────────────────────────────────────────────────────
+#
+# When replaying a failed transaction whose result metadata does not carry a
+# complete ledger footprint, Glassbox automatically fetches the missing entries
+# from the configured Soroban RPC endpoint(s).  No additional configuration is
+# required; the behaviour is always enabled.
+#
+# To force supplementary fetching for specific contract IDs (e.g. when the
+# contract was deployed in a prior transaction), pass --contract-id flags on
+# the CLI or set ContractIDs in the ReplayInput programmatically.
 
 # Maximum source map cache size (e.g., 500MB, 1GB)
 # When exceeded, oldest entries are automatically evicted.
