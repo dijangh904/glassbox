@@ -18,12 +18,12 @@ import (
 	"time"
 
 	"github.com/dotandev/glassbox/internal/config"
-	"github.com/dotandev/glassbox/internal/debug"
 	"github.com/dotandev/glassbox/internal/decenstorage"
 	"github.com/dotandev/glassbox/internal/decoder"
 	"github.com/dotandev/glassbox/internal/errors"
 	"github.com/dotandev/glassbox/internal/logger"
 	"github.com/dotandev/glassbox/internal/lto"
+	"github.com/dotandev/glassbox/internal/replay"
 	"github.com/dotandev/glassbox/internal/rpc"
 	"github.com/dotandev/glassbox/internal/security"
 	"github.com/dotandev/glassbox/internal/session"
@@ -683,7 +683,7 @@ Local WASM Replay Mode:
 
 		// Persist snapshot registry to disk when --save-snapshots is set.
 		if saveSnapshotsFlag != "" && len(collectedEntries) > 0 {
-			reg := debug.New(version.Version, txHash, networkFlag, resp.EnvelopeXdr, resp.ResultMetaXdr)
+			reg := replay.New(version.Version, txHash, networkFlag, resp.EnvelopeXdr, resp.ResultMetaXdr)
 			for _, ce := range collectedEntries {
 				reg.Add(ce.ts, snapshot.FromMap(ce.entries))
 			}
@@ -1620,7 +1620,7 @@ func findDeprecatedHostFunction(input string) (string, bool) {
 // runFromRegistry replays a saved time-travel session from a snapshot registry
 // file without any network connectivity.
 func runFromRegistry(ctx context.Context, path string) error {
-	reg, err := debug.LoadFromFile(path)
+	reg, err := replay.LoadFromFile(path)
 	if err != nil {
 		return fmt.Errorf("failed to load snapshot registry: %w", err)
 	}

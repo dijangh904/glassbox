@@ -117,6 +117,12 @@ func (l *SplitLayout) ListenResize() <-chan struct{} {
 }
 
 func (l *SplitLayout) Render(leftLines, rightLines []string) {
+	l.RenderWithSearch(leftLines, rightLines, "")
+}
+
+// RenderWithSearch renders the split layout and appends a search counter to
+// the status bar when matchCounter is non-empty.
+func (l *SplitLayout) RenderWithSearch(leftLines, rightLines []string, matchCounter string) {
 	lw := l.LeftWidth()
 	rw := l.RightWidth()
 	contentRows := l.Height - 3
@@ -146,6 +152,9 @@ func (l *SplitLayout) Render(leftLines, rightLines []string) {
 	sb.WriteByte('\n')
 
 	status := fmt.Sprintf(" [focus: %s]  %s", l.Focus, KeyHelp())
+	if matchCounter != "" {
+		status += "  " + matchCounter
+	}
 	if len(status) > l.Width {
 		status = status[:l.Width]
 	}

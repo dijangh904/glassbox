@@ -60,14 +60,20 @@ func NewCustomClient(config NetworkConfig) (*Client, error) {
 		sorobanURL = config.HorizonURL
 	}
 
+	policy := DefaultFailoverPolicy()
+	hc := NewHealthCollector()
+
 	return &Client{
 		Horizon:          horizonClient,
 		Network:          "custom",
 		SorobanURL:       sorobanURL,
+		SorobanAltURLs:   []string{sorobanURL},
 		Config:           config,
 		CacheEnabled:     true,
 		httpClient:       httpClient,
-		healthCollector:  NewHealthCollector(),
+		healthCollector:  hc,
+		selector:         NewEndpointSelector(policy, hc),
+		failoverPolicy:   policy,
 		FailureThreshold: 5,
 		RetryTimeout:     60,
 	}, nil

@@ -22,6 +22,62 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+// selectSorobanURL picks the best Soroban RPC endpoint using the adaptive selector.
+// Falls back to c.SorobanURL when no selector or alt URLs are configured.
+func (c *Client) selectSorobanURL() string {
+	if c.selector != nil && len(c.SorobanAltURLs) > 1 {
+		return c.selector.Select(c.SorobanAltURLs)
+	}
+	if c.SorobanURL != "" {
+		return c.SorobanURL
+	}
+	switch c.Network {
+	case Testnet:
+		return TestnetSorobanURL
+	case Mainnet:
+		return MainnetSorobanURL
+	case Futurenet:
+		return FuturenetSorobanURL
+	}
+	return c.SorobanURL
+}
+
+// rotateSorobanURL switches to the next Soroban endpoint after a failure.
+// It records the failure on the selector and returns the next candidate URL.
+func (c *Client) rotateSorobanURL(failedURL string) string {
+	if c.selector != nil {
+		c.selector.RecordFailure(failedURL)
+	}
+	c.markFailure(failedURL)
+
+	if len(c.SorobanAltURLs) <= 1 {
+		return failedURL
+	}
+
+	// Pick the next best URL excluding the failed one.
+	candidates := make([]string, 0, len(c.SorobanAltURLs)-1)
+	for _, u := range c.SorobanAltURLs {
+		if u != failedURL {
+			candidates = append(candidates, u)
+		}
+	}
+	if len(candidates) == 0 {
+		return failedURL
+	}
+	if c.selector != nil {
+		return c.selector.Select(candidates)
+	}
+	return candidates[0]
+}
+
+// sorobanEndpointAttempts returns how many Soroban endpoint attempts to make.
+func (c *Client) sorobanEndpointAttempts() int {
+	if len(c.SorobanAltURLs) > 1 {
+		return len(c.SorobanAltURLs)
+	}
+	return c.endpointAttempts()
+}
+
 type GetLatestLedgerResponse struct {
 	Jsonrpc string `json:"jsonrpc"`
 	ID      int    `json:"id"`
@@ -137,12 +193,17 @@ func (c *Client) GetLedgerEntries(ctx context.Context, keys []string) (map[strin
 		return entries, nil
 	}
 
-	// Single batch - use existing failover logic
-	attempts := c.endpointAttempts()
+	// Single batch - use adaptive failover logic
+	attempts := c.sorobanEndpointAttempts()
+	activeURL := c.selectSorobanURL()
 	for attempt := 0; attempt < attempts; attempt++ {
 
-		fetchedEntries, err := c.getLedgerEntriesAttempt(ctx, keysToFetch)
+		fetchedEntries, err := c.getLedgerEntriesAttemptURL(ctx, keysToFetch, activeURL)
 		if err == nil {
+			if c.selector != nil {
+				c.selector.RecordSuccess(activeURL)
+			}
+			c.markSuccess(activeURL)
 			// Merge cached entries with fetched entries
 			for k, v := range fetchedEntries {
 				entries[k] = v
@@ -150,18 +211,12 @@ func (c *Client) GetLedgerEntries(ctx context.Context, keys []string) (map[strin
 			return entries, nil
 		}
 
-		c.markFailure(c.SorobanURL)
+		logger.Logger.Warn("getLedgerEntries failed, rotating Soroban endpoint",
+			"failed_url", activeURL, "attempt", attempt+1, "error", err)
+		activeURL = c.rotateSorobanURL(activeURL)
 
-		if attempt < attempts-1 && len(c.AltURLs) > 1 {
-			logger.Logger.Warn("Retrying with fallback Soroban RPC...", "error", err)
-			if !c.rotateURL() {
-				break
-			}
+		if attempt < attempts-1 {
 			continue
-		}
-
-		if len(c.AltURLs) <= 1 {
-			return nil, err
 		}
 	}
 	return nil, &AllNodesFailedError{Failures: []NodeFailure{}}
@@ -272,7 +327,13 @@ func (c *Client) getLedgerEntriesAttempt(ctx context.Context, keysToFetch []stri
 			targetURL = FuturenetSorobanURL
 		}
 	}
+	return c.getLedgerEntriesAttemptURL(ctx, keysToFetch, targetURL)
+}
 
+// getLedgerEntriesAttemptURL performs a single getLedgerEntries call against the
+// explicitly provided targetURL. This allows the adaptive failover loop to pass
+// the selector-chosen URL without mutating c.SorobanURL.
+func (c *Client) getLedgerEntriesAttemptURL(ctx context.Context, keysToFetch []string, targetURL string) (entries map[string]string, err error) {
 	timer := c.startMethodTimer(ctx, "rpc.get_ledger_entries", map[string]string{
 		"network": c.GetNetworkName(),
 		"rpc_url": targetURL,
@@ -425,29 +486,26 @@ type SimulateTransactionResponse struct {
 
 // SimulateTransaction calls Soroban RPC simulateTransaction using a base64 TransactionEnvelope XDR.
 func (c *Client) SimulateTransaction(ctx context.Context, envelopeXdr string) (*SimulateTransactionResponse, error) {
-	attempts := c.endpointAttempts()
+	attempts := c.sorobanEndpointAttempts()
+	activeURL := c.selectSorobanURL()
 	var failures []NodeFailure
 	for attempt := 0; attempt < attempts; attempt++ {
-		resp, err := c.simulateTransactionAttempt(ctx, envelopeXdr)
+		resp, err := c.simulateTransactionAttemptURL(ctx, envelopeXdr, activeURL)
 		if err == nil {
-			c.markSuccess(c.SorobanURL)
+			if c.selector != nil {
+				c.selector.RecordSuccess(activeURL)
+			}
+			c.markSuccess(activeURL)
 			return resp, nil
 		}
 
-		c.markFailure(c.SorobanURL)
+		failures = append(failures, NodeFailure{URL: activeURL, Reason: err})
+		logger.Logger.Warn("simulateTransaction failed, rotating Soroban endpoint",
+			"failed_url", activeURL, "attempt", attempt+1, "error", err)
+		activeURL = c.rotateSorobanURL(activeURL)
 
-		failures = append(failures, NodeFailure{URL: c.SorobanURL, Reason: err})
-
-		if attempt < attempts-1 && len(c.AltURLs) > 1 {
-			logger.Logger.Warn("Retrying transaction simulation with fallback RPC...", "error", err)
-			if !c.rotateURL() {
-				break
-			}
+		if attempt < attempts-1 {
 			continue
-		}
-
-		if len(c.AltURLs) <= 1 {
-			return nil, err
 		}
 	}
 	return nil, &AllNodesFailedError{Failures: failures}
@@ -467,7 +525,12 @@ func (c *Client) simulateTransactionAttempt(ctx context.Context, envelopeXdr str
 			targetURL = FuturenetSorobanURL
 		}
 	}
+	return c.simulateTransactionAttemptURL(ctx, envelopeXdr, targetURL)
+}
 
+// simulateTransactionAttemptURL performs a single simulateTransaction call against
+// the explicitly provided targetURL.
+func (c *Client) simulateTransactionAttemptURL(ctx context.Context, envelopeXdr string, targetURL string) (simResp *SimulateTransactionResponse, err error) {
 	timer := c.startMethodTimer(ctx, "rpc.simulate_transaction", map[string]string{
 		"network": c.GetNetworkName(),
 		"rpc_url": targetURL,
@@ -552,23 +615,25 @@ func (c *Client) simulateTransactionAttempt(ctx context.Context, envelopeXdr str
 
 // GetHealth checks the health of the Soroban RPC endpoint.
 func (c *Client) GetHealth(ctx context.Context) (*GetHealthResponse, error) {
-	attempts := c.endpointAttempts()
+	attempts := c.sorobanEndpointAttempts()
+	activeURL := c.selectSorobanURL()
 	var failures []NodeFailure
 	for attempt := 0; attempt < attempts; attempt++ {
-		resp, err := c.getHealthAttempt(ctx)
+		resp, err := c.getHealthAttemptURL(ctx, activeURL)
 		if err == nil {
-			c.markSuccess(c.SorobanURL)
+			if c.selector != nil {
+				c.selector.RecordSuccess(activeURL)
+			}
+			c.markSuccess(activeURL)
 			return resp, nil
 		}
 
-		c.markFailure(c.SorobanURL)
-		failures = append(failures, NodeFailure{URL: c.SorobanURL, Reason: err})
+		failures = append(failures, NodeFailure{URL: activeURL, Reason: err})
+		logger.Logger.Warn("getHealth failed, rotating Soroban endpoint",
+			"failed_url", activeURL, "attempt", attempt+1, "error", err)
+		activeURL = c.rotateSorobanURL(activeURL)
 
-		if attempt < attempts-1 && len(c.AltURLs) > 1 {
-			logger.Logger.Warn("Retrying GetHealth with fallback RPC...", "error", err)
-			if !c.rotateURL() {
-				break
-			}
+		if attempt < attempts-1 {
 			continue
 		}
 	}
@@ -580,6 +645,11 @@ func (c *Client) getHealthAttempt(ctx context.Context) (healthResp *GetHealthRes
 	if targetURL == "" {
 		targetURL = c.HorizonURL
 	}
+	return c.getHealthAttemptURL(ctx, targetURL)
+}
+
+// getHealthAttemptURL performs a single getHealth call against the explicitly provided targetURL.
+func (c *Client) getHealthAttemptURL(ctx context.Context, targetURL string) (healthResp *GetHealthResponse, err error) {
 	timer := c.startMethodTimer(ctx, "rpc.get_health", map[string]string{
 		"network": c.GetNetworkName(),
 		"rpc_url": targetURL,
@@ -608,12 +678,6 @@ func (c *Client) getHealthAttempt(ctx context.Context) (healthResp *GetHealthRes
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, errors.NewRPCError(errors.CodeRPCMarshalFailed, err)
-	}
-
-	// Prefer SorobanURL but fall back to current HorizonURL so failovers are reflected.
-	targetURL = c.SorobanURL
-	if targetURL == "" {
-		targetURL = c.HorizonURL
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewBuffer(bodyBytes))

@@ -38,6 +38,8 @@ type InteractiveViewer struct {
 	fetchErr    map[int]string
 	fetchCh     chan fetchedState
 	fetchDelay  time.Duration
+	// search holds all search/filter state and persists across commands.
+	search *SearchState
 }
 
 type fetchedState struct {
@@ -58,7 +60,11 @@ func NewInteractiveViewer(trace *ExecutionTrace) *InteractiveViewer {
 		fetching:    make(map[int]bool),
 		fetchErr:    make(map[int]string),
 		fetchCh:     make(chan fetchedState, 32),
+		search:      NewSearchState(),
 	}
+
+	// Index all trace nodes for search.
+	viewer.search.IndexNodes(viewer.flatTraceNodes())
 
 	// Detect any traps in the trace
 	detector := &TrapDetector{}
@@ -79,7 +85,11 @@ func NewInteractiveViewerWithWASM(trace *ExecutionTrace, wasmData []byte) *Inter
 		fetching:    make(map[int]bool),
 		fetchErr:    make(map[int]string),
 		fetchCh:     make(chan fetchedState, 32),
+		search:      NewSearchState(),
 	}
+
+	// Index all trace nodes for search.
+	viewer.search.IndexNodes(viewer.flatTraceNodes())
 
 	// Initialize DWARF parser if WASM data is provided
 	if len(wasmData) > 0 {
@@ -198,8 +208,16 @@ func (v *InteractiveViewer) handleCommand(command string) bool {
 
 	switch cmd {
 	case "n", "next", "forward":
-		v.navHistory.Push(v.trace.CurrentStep)
-		v.stepForward()
+		// "n" is overloaded: in search mode it means "next match"; otherwise step forward.
+		if v.search.Mode() == SearchModeActive {
+			v.searchNextMatch()
+		} else {
+			v.navHistory.Push(v.trace.CurrentStep)
+			v.stepForward()
+		}
+	case "N":
+		// Capital N always means previous search match (vi convention).
+		v.searchPrevMatch()
 	case "b", "p", "prev", "back", "backward":
 		v.navHistory.Push(v.trace.CurrentStep)
 		v.stepBackward()
@@ -213,6 +231,9 @@ func (v *InteractiveViewer) handleCommand(command string) bool {
 		v.jumpToStep(strconv.Itoa(len(v.trace.States) - 1))
 	case "f", "filter":
 		v.cycleEventFilter()
+	case "tf", "tracefilter":
+		// Toggle the search-based node filter mode.
+		v.toggleFilterMode()
 	case "j", "jump":
 		if len(parts) > 1 {
 			v.navHistory.Push(v.trace.CurrentStep)
@@ -236,6 +257,8 @@ func (v *InteractiveViewer) handleCommand(command string) bool {
 		v.displayTrapInfo()
 	case "i", "info":
 		v.showNavigationInfo()
+	case "si", "searchinfo":
+		v.searchInfo()
 	case "sp", "split":
 		v.showSplitPane()
 	case "l", "list":
@@ -258,13 +281,145 @@ func (v *InteractiveViewer) handleCommand(command string) bool {
 			fmt.Println("Usage: yank <a/r> [index]")
 		}
 	default:
+		// Check if the command starts with / — treat as inline search.
+		if strings.HasPrefix(cmdExact, "/") {
+			v.handleSearch(strings.TrimPrefix(cmdExact, "/"))
+			return false
+		}
 		fmt.Printf("Unknown command: %s. Type 'help' for available commands.\n", cmdExact)
 	}
 
 	return false
 }
 
-// rewindToStart resets the viewer to step 0, clearing filters and search state.
+// flatTraceNodes returns a flat list of all TraceNode-like objects derived
+// from the execution trace states. Used to seed the search index.
+func (v *InteractiveViewer) flatTraceNodes() []*TraceNode {
+	nodes := make([]*TraceNode, 0, len(v.trace.States))
+	for i := range v.trace.States {
+		s := &v.trace.States[i]
+		n := NewTraceNode(fmt.Sprintf("step-%d", s.Step), s.Operation)
+		n.ContractID = s.ContractID
+		n.Function = s.Function
+		n.Error = s.Error
+		n.EventData = s.WasmInstruction
+		nodes = append(nodes, n)
+	}
+	return nodes
+}
+
+// handleSearch processes a raw search query string entered via the / command.
+// It indexes nodes, runs the search, and jumps to the first match.
+func (v *InteractiveViewer) handleSearch(query string) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		v.search.ClearSearch()
+		fmt.Println("Search cleared.")
+		return
+	}
+
+	v.search.IndexNodes(v.flatTraceNodes())
+	v.search.engine.SetQuery(query)
+	matches := v.search.engine.Search(v.search.flatNodes)
+	v.search.mode = SearchModeActive
+
+	if len(matches) == 0 {
+		fmt.Printf("%s No matches for %q\n", visualizer.Error(), query)
+		return
+	}
+
+	// Jump to first match.
+	first := v.search.engine.CurrentMatch()
+	if first != nil {
+		_ = v.jumpToMatchStep(first)
+	}
+	fmt.Printf("%s %s\n", visualizer.Symbol("target"), v.search.MatchCounterLine())
+}
+
+// jumpToMatchStep navigates the trace to the step corresponding to a NodeMatch.
+func (v *InteractiveViewer) jumpToMatchStep(m *NodeMatch) error {
+	if m == nil {
+		return nil
+	}
+	// NodeIndex maps 1:1 to trace step index.
+	step := m.NodeIndex
+	if step < 0 || step >= len(v.trace.States) {
+		return nil
+	}
+	v.navHistory.Push(v.trace.CurrentStep)
+	_, err := v.trace.JumpToStep(step)
+	return err
+}
+
+// searchNextMatch moves to the next search match and displays it.
+func (v *InteractiveViewer) searchNextMatch() {
+	if v.search.Mode() != SearchModeActive {
+		fmt.Println("No active search. Use / to start a search.")
+		return
+	}
+	m := v.search.NextMatch()
+	if m == nil {
+		fmt.Printf("%s No matches.\n", visualizer.Error())
+		return
+	}
+	if err := v.jumpToMatchStep(m); err != nil {
+		fmt.Printf("%s %s\n", visualizer.Error(), err)
+		return
+	}
+	fmt.Printf("%s %s\n", visualizer.Symbol("target"), v.search.MatchCounterLine())
+	v.displayCurrentState()
+}
+
+// searchPrevMatch moves to the previous search match and displays it.
+func (v *InteractiveViewer) searchPrevMatch() {
+	if v.search.Mode() != SearchModeActive {
+		fmt.Println("No active search. Use / to start a search.")
+		return
+	}
+	m := v.search.PrevMatch()
+	if m == nil {
+		fmt.Printf("%s No matches.\n", visualizer.Error())
+		return
+	}
+	if err := v.jumpToMatchStep(m); err != nil {
+		fmt.Printf("%s %s\n", visualizer.Error(), err)
+		return
+	}
+	fmt.Printf("%s %s\n", visualizer.Symbol("target"), v.search.MatchCounterLine())
+	v.displayCurrentState()
+}
+
+// toggleFilterMode switches the trace filter mode on/off and reports the result.
+func (v *InteractiveViewer) toggleFilterMode() {
+	if v.search.Mode() != SearchModeActive {
+		fmt.Println("Filter mode requires an active search. Use / to start a search first.")
+		return
+	}
+	mode := v.search.ToggleFilterMode()
+	if mode == FilterModeOn {
+		visible := len(v.search.FilteredFlatNodes())
+		total := len(v.search.flatNodes)
+		fmt.Printf("%s Filter mode ON — showing %d/%d nodes matching %q (parent branches preserved)\n",
+			visualizer.Symbol("eye"), visible, total, v.search.Query())
+	} else {
+		fmt.Printf("%s Filter mode OFF — all %d nodes visible\n",
+			visualizer.Symbol("eye"), len(v.search.flatNodes))
+	}
+}
+
+// searchInfo prints a summary of the current search state.
+func (v *InteractiveViewer) searchInfo() {
+	switch v.search.Mode() {
+	case SearchModeOff:
+		fmt.Println("No active search. Use / to start a search.")
+	case SearchModeActive:
+		fmt.Printf("Query:   %q\n", v.search.Query())
+		fmt.Printf("Matches: %d total, currently at %d\n",
+			v.search.MatchCount(), v.search.CurrentMatchNumber())
+		fmt.Printf("Filter:  %v\n", v.search.IsFiltering())
+		fmt.Printf("Counter: %s\n", v.search.MatchCounterLine())
+	}
+}
 func (v *InteractiveViewer) rewindToStart() {
 	if len(v.trace.States) == 0 {
 		fmt.Printf("%s No states to rewind to\n", visualizer.Error())
@@ -420,6 +575,11 @@ func (v *InteractiveViewer) displayCurrentState() {
 	termW := getTermWidth()
 	fmt.Printf("\n%s Current State\n", visualizer.Symbol("pin"))
 	fmt.Println(separator(termW))
+
+	// Show search match counter when a search is active.
+	if counter := v.search.MatchCounterLine(); counter != "" {
+		fmt.Printf("Search: %s\n", counter)
+	}
 
 	if v.eventFilter != "" {
 		filteredIdx := v.trace.FilteredCurrentIndex(v.eventFilter)
@@ -975,9 +1135,12 @@ func (v *InteractiveViewer) showHelp() {
 	fmt.Println("  t, trap              - Show trap details")
 	fmt.Println()
 	fmt.Println("Search:")
-	fmt.Println("  /                    - Start search")
-	fmt.Println("  n / N                - Next/previous match")
-	fmt.Println("  ESC                  - Clear search")
+	fmt.Println("  /query               - Search trace nodes (contract, function, error, event)")
+	fmt.Println("  n                    - Next match (also: step forward when no search active)")
+	fmt.Println("  N                    - Previous match")
+	fmt.Println("  tf, tracefilter      - Toggle filter mode (hide non-matching nodes, keep context)")
+	fmt.Println("  si, searchinfo       - Show search state summary")
+	fmt.Println("  ESC / /              - Clear search (use /  with empty query)")
 	fmt.Println()
 	fmt.Println("Other:")
 	fmt.Println("  sp, split            - Open expanded split pane")

@@ -1,0 +1,140 @@
+{
+  "version": "1",
+  "rules": [
+    {
+      "id": "auth-cross-contract",
+      "description": "Authorization failure in a cross-contract call (caller and callee identified from diagnostic events)",
+      "priority": 10,
+      "severity": "error",
+      "match_kind": "any",
+      "require_events": true,
+      "patterns": [
+        "error(auth,",
+        "not authorized",
+        "require_auth",
+        "auth failed",
+        "missing authorization",
+        "invalidaction",
+        "notauthorized"
+      ],
+      "template": "Transaction {{.TxHash}} failed on {{.Network}} because contract {{.Caller}} invoked contract {{.Callee}} which lacked the required authorization."
+    },
+    {
+      "id": "auth-single-contract",
+      "description": "Authorization failure with a single contract identified from diagnostic events",
+      "priority": 11,
+      "severity": "error",
+      "match_kind": "any",
+      "require_events": true,
+      "patterns": [
+        "error(auth,",
+        "not authorized",
+        "require_auth",
+        "auth failed",
+        "missing authorization",
+        "invalidaction",
+        "notauthorized"
+      ],
+      "template": "Transaction {{.TxHash}} failed on {{.Network}} because contract {{.Callee}} could not satisfy an authorization check."
+    },
+    {
+      "id": "auth-generic",
+      "description": "Authorization failure with no contract context",
+      "priority": 12,
+      "severity": "error",
+      "match_kind": "any",
+      "patterns": [
+        "error(auth,",
+        "not authorized",
+        "require_auth",
+        "auth failed",
+        "missing authorization",
+        "invalidaction",
+        "notauthorized"
+      ],
+      "template": "Transaction {{.TxHash}} failed on {{.Network}} due to an authorization failure; a required signature or auth entry was absent or invalid."
+    },
+    {
+      "id": "budget-cpu-and-memory",
+      "description": "Both CPU and memory budgets exhausted",
+      "priority": 20,
+      "severity": "error",
+      "match_kind": "any",
+      "patterns": [
+        "cpulimitexceeded",
+        "cpu limit exceeded",
+        "error(budget, cpu",
+        "memlimitexceeded",
+        "memory limit exceeded",
+        "error(budget, mem"
+      ],
+      "template": "Transaction {{.TxHash}} failed on {{.Network}} because it exhausted both the CPU instruction budget and the memory allocation budget during contract execution."
+    },
+    {
+      "id": "budget-cpu",
+      "description": "CPU instruction budget exceeded",
+      "priority": 21,
+      "severity": "error",
+      "match_kind": "any",
+      "patterns": [
+        "cpulimitexceeded",
+        "cpu limit exceeded",
+        "error(budget, cpu"
+      ],
+      "template": "Transaction {{.TxHash}} failed on {{.Network}} because the contract execution exceeded the Soroban CPU instruction budget."
+    },
+    {
+      "id": "budget-memory",
+      "description": "Memory allocation budget exceeded",
+      "priority": 22,
+      "severity": "error",
+      "match_kind": "any",
+      "patterns": [
+        "memlimitexceeded",
+        "memory limit exceeded",
+        "error(budget, mem"
+      ],
+      "template": "Transaction {{.TxHash}} failed on {{.Network}} because the contract execution exceeded the Soroban memory allocation budget."
+    },
+    {
+      "id": "insufficient-balance",
+      "description": "Account or contract held insufficient balance for a transfer",
+      "priority": 30,
+      "severity": "error",
+      "match_kind": "any",
+      "patterns": [
+        "insufficient_balance",
+        "insufficient balance",
+        "balance is not sufficient"
+      ],
+      "template": "Transaction {{.TxHash}} failed on {{.Network}} because an account or contract held insufficient balance to cover the requested transfer."
+    },
+    {
+      "id": "missing-ledger-entry",
+      "description": "Required ledger entry or contract storage key was absent",
+      "priority": 40,
+      "severity": "error",
+      "match_kind": "any",
+      "patterns": [
+        "missingvalue",
+        "missing value",
+        "error(storage,",
+        "not found"
+      ],
+      "template": "Transaction {{.TxHash}} failed on {{.Network}} because a required ledger entry or contract storage key was not present at execution time."
+    },
+    {
+      "id": "wasm-trap",
+      "description": "Fatal WASM trap caused by an unhandled panic or explicit unreachable instruction",
+      "priority": 50,
+      "severity": "error",
+      "match_kind": "any",
+      "patterns": [
+        "wasm trap",
+        "unreachable",
+        "contract_invocation_failed"
+      ],
+      "template": "Transaction {{.TxHash}} failed on {{.Network}} due to a fatal WASM trap inside the contract, typically caused by an unhandled panic or an explicit unreachable instruction."
+    }
+  ]
+}
