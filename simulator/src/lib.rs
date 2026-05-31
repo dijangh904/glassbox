@@ -6,6 +6,7 @@
 pub mod context;
 pub mod gas_optimizer;
 pub mod git_detector;
+pub mod horizon;
 pub mod hsm;
 pub mod ipc;
 pub mod runner;
