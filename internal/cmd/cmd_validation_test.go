@@ -181,3 +181,92 @@ func containsStr(s, sub string) bool {
 		return false
 	}())
 }
+
+// ─── validateGenerateBindingsFlags ────────────────────────────────────────────
+
+func TestValidateGenerateBindingsFlags_Runtime(t *testing.T) {
+	tests := []struct {
+		runtime string
+		wantErr bool
+	}{
+		{"node", false},
+		{"browser", false},
+		{"universal", false},
+		{"NODE", false},    // case-insensitive
+		{"BROWSER", false}, // case-insensitive
+		{"electron", true},
+		{"deno", true},
+		{"", false}, // empty = default
+	}
+	for _, tt := range tests {
+		t.Run(tt.runtime, func(t *testing.T) {
+			err := validateGenerateBindingsFlags("testnet", nil, "", tt.runtime, "", "")
+			if (err != nil) != tt.wantErr {
+				t.Errorf("runtime=%q error=%v, wantErr=%v", tt.runtime, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateGenerateBindingsFlags_SpecFormat(t *testing.T) {
+	tests := []struct {
+		format  string
+		wantErr bool
+	}{
+		{"json", false},
+		{"xdr", false},
+		{"JSON", false}, // case-insensitive
+		{"XDR", false},  // case-insensitive
+		{"yaml", true},
+		{"toml", true},
+		{"", false}, // empty = auto-detect
+	}
+	for _, tt := range tests {
+		t.Run(tt.format, func(t *testing.T) {
+			err := validateGenerateBindingsFlags("testnet", nil, "", "", "", tt.format)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("format=%q error=%v, wantErr=%v", tt.format, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateGenerateBindingsFlags_MutuallyExclusive(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Create a dummy wasm file and spec file.
+	wasmFile := tmp + "/contract.wasm"
+	specFile := tmp + "/contract.json"
+	if err := os.WriteFile(wasmFile, []byte{0x00}, 0600); err != nil {
+		t.Fatalf("setup wasm: %v", err)
+	}
+	if err := os.WriteFile(specFile, []byte(`{}`), 0600); err != nil {
+		t.Fatalf("setup spec: %v", err)
+	}
+
+	// Both wasm and spec-file provided → error.
+	err := validateGenerateBindingsFlags("testnet", []string{wasmFile}, "", "", specFile, "")
+	if err == nil {
+		t.Error("expected error when both wasm-file and --spec-file are provided")
+	}
+	if !containsStr(err.Error(), "mutually exclusive") {
+		t.Errorf("error %q should mention mutually exclusive", err.Error())
+	}
+
+	// Only wasm → OK.
+	if err := validateGenerateBindingsFlags("testnet", []string{wasmFile}, "", "", "", ""); err != nil {
+		t.Errorf("wasm only: unexpected error %v", err)
+	}
+
+	// Only spec-file → OK.
+	if err := validateGenerateBindingsFlags("testnet", nil, "", "", specFile, ""); err != nil {
+		t.Errorf("spec-file only: unexpected error %v", err)
+	}
+}
+
+func TestValidateGenerateBindingsFlags_MissingSpecFile(t *testing.T) {
+	err := validateGenerateBindingsFlags("testnet", nil, "", "", "/no/such/file.json", "")
+	if err == nil {
+		t.Error("expected error for missing spec file")
+	}
+}

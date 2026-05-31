@@ -85,15 +85,62 @@ func validateMutuallyExclusive(set map[string]bool, flags ...string) error {
 
 // validateGenerateBindingsArgs validates all flags for the generate-bindings
 // command at parse time before any business logic runs.
+// Deprecated: use validateGenerateBindingsFlags instead.
 func validateGenerateBindingsArgs(network, wasmPath, outputDir string) error {
+	args := []string{}
+	if wasmPath != "" {
+		args = []string{wasmPath}
+	}
+	return validateGenerateBindingsFlags(network, args, outputDir, "", "", "")
+}
+
+// validateGenerateBindingsFlags validates all flags for the generate-bindings
+// command, including the new --runtime, --spec-file, and --spec-format flags.
+func validateGenerateBindingsFlags(network string, args []string, outputDir, runtime, specFile, specFormat string) error {
 	if err := validateNetwork(network); err != nil {
 		return err
 	}
-	if wasmPath != "" {
-		if err := validateFilePath("wasm", wasmPath); err != nil {
+
+	// Validate runtime target.
+	if runtime != "" {
+		validRuntimes := map[string]bool{"node": true, "browser": true, "universal": true}
+		if !validRuntimes[strings.ToLower(runtime)] {
+			return errors.WrapValidationError(fmt.Sprintf(
+				"--runtime %q is not supported — must be one of: node, browser, universal", runtime,
+			))
+		}
+	}
+
+	// Validate spec-format.
+	if specFormat != "" {
+		validFormats := map[string]bool{"json": true, "xdr": true}
+		if !validFormats[strings.ToLower(specFormat)] {
+			return errors.WrapValidationError(fmt.Sprintf(
+				"--spec-format %q is not supported — must be one of: json, xdr", specFormat,
+			))
+		}
+	}
+
+	// Validate spec-file and wasm-file are mutually exclusive.
+	hasWasm := len(args) == 1 && args[0] != ""
+	hasSpec := specFile != ""
+	if hasWasm && hasSpec {
+		return errors.WrapValidationError(
+			"wasm-file argument and --spec-file are mutually exclusive — provide only one",
+		)
+	}
+
+	if hasWasm {
+		if err := validateFilePath("wasm", args[0]); err != nil {
 			return err
 		}
 	}
+	if hasSpec {
+		if err := validateFilePath("spec-file", specFile); err != nil {
+			return err
+		}
+	}
+
 	if outputDir != "" {
 		if info, err := os.Stat(outputDir); err == nil && !info.IsDir() {
 			return errors.WrapValidationError(fmt.Sprintf(
