@@ -18,6 +18,7 @@ var protocolDiagnoseJSON bool
 
 var protocolRegisterCmd = &cobra.Command{
 	Use:     "protocol:register",
+	Aliases: []string{"pb:register"},
 	Short:   "Register the glassbox:// protocol handler in the operating system",
 	GroupID: "utility",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -36,6 +37,7 @@ var protocolRegisterCmd = &cobra.Command{
 
 var protocolUnregisterCmd = &cobra.Command{
 	Use:     "protocol:unregister",
+	Aliases: []string{"pb:unregister"},
 	Short:   "Unregister the glassbox:// protocol handler from the operating system",
 	GroupID: "utility",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -54,6 +56,7 @@ var protocolUnregisterCmd = &cobra.Command{
 
 var protocolStatusCmd = &cobra.Command{
 	Use:     "protocol:status",
+	Aliases: []string{"pb:status"},
 	Short:   "Check current registration status of the glassbox:// protocol handler",
 	GroupID: "utility",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -73,6 +76,7 @@ var protocolStatusCmd = &cobra.Command{
 
 var protocolVerifyCmd = &cobra.Command{
 	Use:     "protocol:verify",
+	Aliases: []string{"pb:verify"},
 	Short:   "Verify the native OS registration for the glassbox:// protocol handler",
 	GroupID: "utility",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -99,7 +103,7 @@ var protocolVerifyCmd = &cobra.Command{
 
 var protocolHandlerCmd = &cobra.Command{
 	Use:     "protocol:handle <uri>",
-	Aliases: []string{"protocol-handler"},
+	Aliases: []string{"protocol-handler", "pb:handle"},
 	Short:   "Handle an glassbox:// protocol URI and dispatch it to the debugger",
 	GroupID: "utility",
 	Args:    cobra.ExactArgs(1),
@@ -139,6 +143,7 @@ var protocolHandlerCmd = &cobra.Command{
 
 var protocolDiagnoseCmd = &cobra.Command{
 	Use:     "protocol:diagnose",
+	Aliases: []string{"pb:diagnose"},
 	Short:   "Inspect the glassbox:// protocol registration and report root causes",
 	GroupID: "utility",
 	Long: `Inspect the glassbox:// protocol registration on the current OS and produce
@@ -202,6 +207,7 @@ Exit codes:
 
 var protocolRepairCmd = &cobra.Command{
 	Use:     "protocol:repair",
+	Aliases: []string{"pb:repair"},
 	Short:   "Repair a broken or missing glassbox:// protocol registration",
 	GroupID: "utility",
 	Long: `Attempt to repair the glassbox:// protocol handler registration.
