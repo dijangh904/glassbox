@@ -4,8 +4,10 @@
 package abi
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/dotandev/glassbox/internal/errors"
 )
@@ -86,4 +88,182 @@ func decodeLEB128(data []byte, offset int) (uint32, int, error) {
 		shift += 7
 	}
 	return 0, 0, fmt.Errorf("LEB128 integer too large")
+}
+// ExtractContractMetadata extracts metadata from WASM custom sections.
+// It looks for "contractmeta" and "soroban" sections that may contain
+// metadata extracted from Soroban contract manifests or annotations.
+func ExtractContractMetadata(wasm []byte) (*ContractMetadata, error) {
+	metadata := &ContractMetadata{}
+
+	// Try to extract from contractmeta section (custom section with metadata)
+	contractMetaData, err := ExtractCustomSection(wasm, "contractmeta")
+	if err != nil {
+		return nil, fmt.Errorf("extracting contractmeta section: %w", err)
+	}
+	if contractMetaData != nil {
+		parseContractMetaData(contractMetaData, metadata)
+	}
+
+	// Try to extract from soroban section (contains Soroban-specific metadata)
+	sorobanData, err := ExtractCustomSection(wasm, "soroban")
+	if err != nil {
+		return nil, fmt.Errorf("extracting soroban section: %w", err)
+	}
+	if sorobanData != nil {
+		parseSorobanMetadata(sorobanData, metadata)
+	}
+
+	// Try to extract from name section (WASM name section with function names)
+	nameData, err := ExtractCustomSection(wasm, "name")
+	if err != nil {
+		return nil, fmt.Errorf("extracting name section: %w", err)
+	}
+	if nameData != nil {
+		parseNameSection(nameData, metadata)
+	}
+
+	return metadata, nil
+}
+
+// parseContractMetaData parses the contractmeta custom section.
+func parseContractMetaData(data []byte, metadata *ContractMetadata) {
+	// The contractmeta section typically contains JSON or key-value pairs
+	// Try parsing as JSON first
+	var metaMap map[string]interface{}
+	if err := json.Unmarshal(data, &metaMap); err == nil {
+		if v, ok := metaMap["name"].(string); ok {
+			metadata.Name = v
+		}
+		if v, ok := metaMap["version"].(string); ok {
+			metadata.Version = v
+		}
+		if v, ok := metaMap["description"].(string); ok {
+			metadata.Description = v
+		}
+		if v, ok := metaMap["author"].(string); ok {
+			metadata.Author = v
+		}
+		if v, ok := metaMap["license"].(string); ok {
+			metadata.License = v
+		}
+		if v, ok := metaMap["source"].(string); ok {
+			metadata.SourceFile = v
+		}
+		if bi, ok := metaMap["build_info"].(map[string]interface{}); ok {
+			if v, ok := bi["rust_version"].(string); ok {
+				metadata.BuildInfo.RustVersion = v
+			}
+			if v, ok := bi["cargo_version"].(string); ok {
+				metadata.BuildInfo.CargoVersion = v
+			}
+			if v, ok := bi["timestamp"].(string); ok {
+				metadata.BuildInfo.BuildTimestamp = v
+			}
+			if v, ok := bi["profile"].(string); ok {
+				metadata.BuildInfo.Profile = v
+			}
+			if v, ok := bi["target"].(string); ok {
+				metadata.BuildInfo.Target = v
+			}
+		}
+		return
+	}
+
+	// Fallback: try parsing as simple key=value format
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			switch key {
+			case "name":
+				metadata.Name = value
+			case "version":
+				metadata.Version = value
+			case "description":
+				metadata.Description = value
+			case "author":
+				metadata.Author = value
+			case "license":
+				metadata.License = value
+			case "source":
+				metadata.SourceFile = value
+			case "rust_version":
+				metadata.BuildInfo.RustVersion = value
+			case "cargo_version":
+				metadata.BuildInfo.CargoVersion = value
+			case "build_timestamp":
+				metadata.BuildInfo.BuildTimestamp = value
+			case "profile":
+				metadata.BuildInfo.Profile = value
+			case "target":
+				metadata.BuildInfo.Target = value
+			}
+		}
+	}
+}
+
+// parseSorobanMetadata parses the soroban custom section.
+func parseSorobanMetadata(data []byte, metadata *ContractMetadata) {
+	// Soroban sections may contain contract name and other info
+	var sorobanMeta struct {
+		Contract struct {
+			Name        string `json:"name"`
+			Version     string `json:"version"`
+			Description string `json:"desc"`
+		} `json:"contract"`
+	}
+
+	if err := json.Unmarshal(data, &sorobanMeta); err == nil {
+		if metadata.Name == "" && sorobanMeta.Contract.Name != "" {
+			metadata.Name = sorobanMeta.Contract.Name
+		}
+		if metadata.Version == "" && sorobanMeta.Contract.Version != "" {
+			metadata.Version = sorobanMeta.Contract.Version
+		}
+		if metadata.Description == "" && sorobanMeta.Contract.Description != "" {
+			metadata.Description = sorobanMeta.Contract.Description
+		}
+	}
+}
+
+// parseNameSection parses the WASM name section to extract the module name.
+func parseNameSection(data []byte, metadata *ContractMetadata) {
+	// The name section is a custom section with subsection IDs
+	// Subsection 0 = module name
+	offset := 0
+
+	// Skip section size
+	_, n, err := decodeLEB128(data, offset)
+	if err != nil {
+		return
+	}
+	offset += n
+
+	// Subsection 0 = module name
+	if offset >= len(data) || data[offset] != 0 {
+		return
+	}
+	offset++
+
+	// Name string size
+	nameLen, n, err := decodeLEB128(data, offset)
+	if err != nil {
+		return
+	}
+	offset += n
+
+	if offset+int(nameLen) > len(data) {
+		return
+	}
+
+	// If no contract name set, use module name
+	if metadata.Name == "" {
+		metadata.Name = string(data[offset : offset+int(nameLen)])
+	}
 }
