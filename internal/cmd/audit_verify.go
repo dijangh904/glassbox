@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"strings"
@@ -26,16 +27,17 @@ var (
 
 // auditVerifyResult is the structured output produced when --json is requested.
 type auditVerifyResult struct {
-	Valid          bool   `json:"valid"`
-	Version        string `json:"version,omitempty"`
-	Timestamp      string `json:"timestamp,omitempty"`
-	TraceHash      string `json:"trace_hash,omitempty"`
-	PublicKey      string `json:"public_key,omitempty"`
-	Provider       string `json:"provider,omitempty"`
-	SignatureValid bool   `json:"signature_valid"`
-	HashValid      bool   `json:"hash_valid"`
-	SchemaValid    *bool  `json:"schema_valid,omitempty"`
-	Error          string `json:"error,omitempty"`
+	Valid           bool   `json:"valid"`
+	Version         string `json:"version,omitempty"`
+	Timestamp       string `json:"timestamp,omitempty"`
+	TraceHash       string `json:"trace_hash,omitempty"`
+	PublicKey       string `json:"public_key,omitempty"`
+	Provider        string `json:"provider,omitempty"`
+	SignatureValid  bool   `json:"signature_valid"`
+	HashValid       bool   `json:"hash_valid"`
+	SchemaValid     *bool  `json:"schema_valid,omitempty"`
+	ProvenanceValid *bool  `json:"provenance_valid,omitempty"`
+	Error           string `json:"error,omitempty"`
 }
 
 var auditVerifyCmd = &cobra.Command{
@@ -144,8 +146,18 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Step 4: Validate provenance fields when present.
+	if log.Provenance != nil {
+		provValid, provErr := validateProvenance(log.Provenance)
+		result.ProvenanceValid = &provValid
+		if provErr != nil && result.Error == "" {
+			result.Error = fmt.Sprintf("provenance validation: %v", provErr)
+		}
+	}
+
 	result.Valid = result.HashValid && result.SignatureValid &&
-		(result.SchemaValid == nil || *result.SchemaValid)
+		(result.SchemaValid == nil || *result.SchemaValid) &&
+		(result.ProvenanceValid == nil || *result.ProvenanceValid)
 
 	return outputVerifyResult(cmd, result, result.Valid)
 }
@@ -189,6 +201,9 @@ func outputVerifyResult(cmd *cobra.Command, r auditVerifyResult, valid bool) err
 	printCheck(out, "Signature   ", r.SignatureValid)
 	if r.SchemaValid != nil {
 		printCheck(out, "Schema      ", *r.SchemaValid)
+	}
+	if r.ProvenanceValid != nil {
+		printCheck(out, "Provenance  ", *r.ProvenanceValid)
 	}
 
 	fmt.Fprintln(out)
@@ -299,4 +314,38 @@ func checkJSONType(field string, val interface{}, expected string) error {
 		return fmt.Errorf("field %q has type %q, expected %q", field, actual, expected)
 	}
 	return nil
+}
+
+// validateProvenance checks that provenance metadata fields are well-formed.
+// It validates the certificate chain PEM blocks and the previous-signature hash
+// format when they are present.
+func validateProvenance(p *SignatureProvenance) (bool, error) {
+	if p == nil {
+		return true, nil
+	}
+
+	// Validate certificate chain: each entry must be a parseable PEM block.
+	for i, certPEM := range p.CertificateChain {
+		block, _ := pem.Decode([]byte(certPEM))
+		if block == nil {
+			return false, fmt.Errorf("certificate_chain[%d] is not valid PEM", i)
+		}
+		if block.Type != "CERTIFICATE" {
+			return false, fmt.Errorf("certificate_chain[%d] has unexpected PEM type %q", i, block.Type)
+		}
+	}
+
+	// Validate previous_signature_hash: must be a 64-char hex string when set.
+	if p.PreviousSignatureHash != "" {
+		if len(p.PreviousSignatureHash) != 64 {
+			return false, fmt.Errorf("previous_signature_hash must be a 64-character hex string (SHA-256)")
+		}
+		for _, c := range p.PreviousSignatureHash {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				return false, fmt.Errorf("previous_signature_hash contains non-hex character %q", c)
+			}
+		}
+	}
+
+	return true, nil
 }

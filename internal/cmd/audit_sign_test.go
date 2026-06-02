@@ -45,6 +45,10 @@ func resetAuditSignFlags() {
 	auditSignPKCS11TokenLabel = ""
 	auditSignPKCS11KeyLabel = ""
 	auditSignPKCS11KeyIDHex = ""
+	auditSignSignerIdentity = ""
+	auditSignKeyID = ""
+	auditSignCertChainFile = ""
+	auditSignPreviousSignatureHash = ""
 }
 
 // ---- readAuditPayload -------------------------------------------------------

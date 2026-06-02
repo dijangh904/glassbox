@@ -7,9 +7,11 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math/big"
-	"regexp"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/dotandev/glassbox/internal/abi"
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
@@ -80,22 +82,82 @@ func (d *Detector) Analyze(envelopeXdr, resultMetaXdr string, events []string, l
 	return d.findings
 }
 
-// AnalyzeContractSource emits warnings for insecure Soroban patterns found in
-// source code or metadata. It is intentionally heuristic and focuses on
-// actionable patterns developers can confirm quickly.
-func (d *Detector) AnalyzeContractSource(ctx SourceContext) []Finding {
+// ScanMetadata applies heuristic vulnerability rules to ABI metadata and source
+// text. It is intentionally conservative: findings are warnings unless the
+// source explicitly contains a risky execution signal such as panic/unwrap.
+func (d *Detector) ScanMetadata(spec *abi.ContractSpec, sourceFiles map[string]string) []Finding {
 	d.findings = make([]Finding, 0)
-	source := strings.ToLower(ctx.Source)
-	metadata := make(map[string]string, len(ctx.Metadata))
-	for k, v := range ctx.Metadata {
-		metadata[strings.ToLower(k)] = strings.ToLower(v)
+
+	if spec != nil {
+		for _, fn := range spec.Functions {
+			name := strings.ToLower(string(fn.Name))
+			if isPrivilegedName(name) && !functionMentionsAuth(sourceFiles, name) {
+				d.addFinding(Finding{
+					Type:        FindingHeuristicWarn,
+					Severity:    SeverityHigh,
+					Title:       "Privileged ABI Function Without Visible Auth",
+					Description: fmt.Sprintf("Function %q looks privileged, but no require_auth/check_auth call was found in supplied source metadata.", string(fn.Name)),
+					Evidence:    string(fn.Name),
+				})
+			}
+			if strings.Contains(name, "upgrade") || strings.Contains(name, "deploy") {
+				d.addFinding(Finding{
+					Type:        FindingHeuristicWarn,
+					Severity:    SeverityMedium,
+					Title:       "Upgradeable Contract Surface",
+					Description: "Deployment or upgrade functions should be reviewed for strict authorization and governance controls.",
+					Evidence:    string(fn.Name),
+				})
+			}
+		}
 	}
 
-	d.checkOpenAuthPattern(source, ctx)
-	d.checkUncheckedAssetMinting(source, metadata, ctx)
-	d.checkUnsafeSignatureTypes(source, metadata, ctx)
-
+	d.checkSourcePatterns(sourceFiles)
 	return d.findings
+}
+
+// ScanSourcePath reads a source file or directory and scans common contract
+// source files for vulnerability heuristics.
+func (d *Detector) ScanSourcePath(path string, spec *abi.ContractSpec) ([]Finding, error) {
+	files := make(map[string]string)
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		files[path] = string(data)
+		return d.ScanMetadata(spec, files), nil
+	}
+	err = filepath.WalkDir(path, func(p string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			name := entry.Name()
+			if name == "target" || name == ".git" || name == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(p))
+		if ext != ".rs" && ext != ".ts" && ext != ".js" && ext != ".json" {
+			return nil
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		files[p] = string(data)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return d.ScanMetadata(spec, files), nil
 }
 
 // GetFindings returns all detected findings
@@ -353,6 +415,55 @@ func (d *Detector) checkAuthorizationBypass(events []string, logs []string) {
 			Evidence:    "Review contract authorization logic",
 		})
 	}
+}
+
+func (d *Detector) checkSourcePatterns(files map[string]string) {
+	for path, content := range files {
+		lower := strings.ToLower(content)
+		if strings.Contains(lower, "unwrap()") || strings.Contains(lower, "expect(") || strings.Contains(lower, "panic!") {
+			d.addFinding(Finding{
+				Type:        FindingVerifiedRisk,
+				Severity:    SeverityHigh,
+				Title:       "Panic-Prone Source Pattern",
+				Description: "Source contains unwrap/expect/panic patterns that can trap contract execution.",
+				Evidence:    path,
+			})
+		}
+		if strings.Contains(lower, "env.storage().persistent().set") && !strings.Contains(lower, "require_auth") {
+			d.addFinding(Finding{
+				Type:        FindingHeuristicWarn,
+				Severity:    SeverityHigh,
+				Title:       "Persistent Storage Write Without Visible Auth",
+				Description: "Persistent storage writes should normally be guarded by an authorization check.",
+				Evidence:    path,
+			})
+		}
+		if strings.Contains(lower, "prng") || strings.Contains(lower, "random") {
+			d.addFinding(Finding{
+				Type:        FindingHeuristicWarn,
+				Severity:    SeverityMedium,
+				Title:       "Randomness Usage",
+				Description: "Randomness-dependent contract logic should be reviewed for predictability and replay assumptions.",
+				Evidence:    path,
+			})
+		}
+	}
+}
+
+func isPrivilegedName(name string) bool {
+	return strings.Contains(name, "admin") || strings.Contains(name, "owner") ||
+		strings.Contains(name, "upgrade") || strings.Contains(name, "pause") ||
+		strings.Contains(name, "mint") || strings.Contains(name, "burn")
+}
+
+func functionMentionsAuth(files map[string]string, name string) bool {
+	for _, content := range files {
+		lower := strings.ToLower(content)
+		if strings.Contains(lower, name) && (strings.Contains(lower, "require_auth") || strings.Contains(lower, "check_auth")) {
+			return true
+		}
+	}
+	return false
 }
 
 // Helper functions
