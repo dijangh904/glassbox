@@ -74,3 +74,40 @@ cargo build --target wasm32-unknown-unknown --release
 ```
 
 See [docs/debug-symbols-guide.md](debug-symbols-guide.md) for more details.
+
+## Cross-repository source links
+
+When contract sources live in another Git repository, map local path prefixes to
+remote GitHub URLs in `.glassbox.toml`:
+
+```toml
+external_source_map = '[{"prefix":"/path/to/vendor/lib","remote_url":"https://github.com/org/lib","branch":"main"}]'
+```
+
+Glassbox uses these mappings when a source file path falls outside the workspace
+repository but under the configured prefix.
+
+## Skip source mapping
+
+For faster raw replay when you only need WASM offsets and traces:
+
+```bash
+glassbox debug --wasm ./contract.wasm --skip-source-mapping
+```
+
+This bypasses DWARF parsing and Git link generation in the simulator.
+
+## Trace verbosity
+
+Control trace detail with `--trace-verbosity`:
+
+| Level | Output |
+|-------|--------|
+| `summary` | Step names and status only |
+| `normal` | Source locations and links (default) |
+| `verbose` | Arguments, WASM instructions, and full event payloads |
+
+```bash
+glassbox debug --wasm ./contract.wasm --trace-verbosity summary
+glassbox trace --print --trace-verbosity verbose execution.json
+```

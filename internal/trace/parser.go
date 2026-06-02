@@ -25,6 +25,25 @@ type DiagnosticEvent struct {
 	WasmInstruction *string  `json:"wasm_instruction,omitempty"`
 }
 
+// BuildTraceNodeTree converts an ExecutionTrace into a TraceNode hierarchy
+// suitable for annotation merging and tree rendering.
+func BuildTraceNodeTree(t *ExecutionTrace) *TraceNode {
+	root := NewTraceNode("root", "transaction")
+	root.EventData = t.TransactionHash
+	for i := range t.States {
+		s := &t.States[i]
+		id := fmt.Sprintf("step-%d", s.Step)
+		n := NewTraceNode(id, s.Operation)
+		n.ContractID = s.ContractID
+		n.EventData = s.Function
+		if s.Error != "" {
+			n.Error = s.Error
+		}
+		root.AddChild(n)
+	}
+	return root
+}
+
 // ParseSimulationResponse converts a simulation response into a trace tree
 func ParseSimulationResponse(resp *SimulationResponse) (*TraceNode, error) {
 	if resp == nil {

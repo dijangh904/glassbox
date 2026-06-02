@@ -4,7 +4,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -115,22 +114,18 @@ func reportExec(cmd *cobra.Command, args []string) error {
 		return errors.WrapValidationError(fmt.Sprintf("failed to create exporter: %v", err))
 	}
 
-	var formats []string
-	switch reportFormat {
-	case "html":
-		formats = []string{"html"}
-	case "pdf":
-		formats = []string{"pdf"}
-	case "html,pdf", "pdf,html":
-		formats = []string{"html", "pdf"}
-	case "json":
-		formats = []string{}
-	default:
-		formats = []string{"html"}
+	diagnosticReport := report.NewDiagnosticReport(executionTrace)
+	if reportFormat == "text" {
+		filename := reportOutput + "/report.txt"
+		if writeErr := os.WriteFile(filename, []byte(diagnosticReport.Text()), 0644); writeErr != nil {
+			return errors.WrapValidationError(fmt.Sprintf("failed to write text report: %v", writeErr))
+		}
+		fmt.Printf("[OK] Report generated: %s\n", filename)
+		return nil
 	}
 
 	if reportFormat == "json" {
-		jsonData, marshalErr := json.MarshalIndent(generatedReport, "", "  ")
+		jsonData, marshalErr := diagnosticReport.JSON()
 		if marshalErr != nil {
 			return errors.WrapMarshalFailed(marshalErr)
 		}
@@ -142,6 +137,18 @@ func reportExec(cmd *cobra.Command, args []string) error {
 
 		fmt.Printf("[OK] Report generated: %s\n", filename)
 		return nil
+	}
+
+	var formats []string
+	switch reportFormat {
+	case "html":
+		formats = []string{"html"}
+	case "pdf":
+		formats = []string{"pdf"}
+	case "html,pdf", "pdf,html":
+		formats = []string{"html", "pdf"}
+	default:
+		formats = []string{"html"}
 	}
 
 	results, err := exporter.ExportMultiple(generatedReport, formats)
@@ -216,7 +223,7 @@ func calculateRiskScore(states []trace.ExecutionState) float64 {
 }
 
 func init() {
-	reportCmd.Flags().StringVar(&reportFormat, "format", "html", "Output format: html, pdf, json, or html,pdf")
+	reportCmd.Flags().StringVar(&reportFormat, "format", "html", "Output format: text, json, html, pdf, or html,pdf")
 	reportCmd.Flags().StringVar(&reportOutput, "output", ".", "Output directory for reports")
 	reportCmd.Flags().StringVar(&reportFile, "file", "", "Trace file to analyze")
 

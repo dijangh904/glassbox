@@ -6,25 +6,29 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/dotandev/glassbox/internal/decoder"
 	"github.com/dotandev/glassbox/internal/errors"
+	"github.com/dotandev/glassbox/internal/gasmodel"
 	"github.com/dotandev/glassbox/internal/trace"
 	"github.com/dotandev/glassbox/internal/visualizer"
 	"github.com/spf13/cobra"
 )
 
 var (
-	traceFile          string
-	traceThemeFlag     string
-	tracePrint         bool
-	traceNoColor       bool
-	traceExportSVG     string
-	traceOutputJSON    string
-	traceExportPath    string
-	traceExportFormat  string
-	traceExportMarkdown string
+	traceFile        string
+	traceThemeFlag   string
+	tracePrint       bool
+	traceNoColor     bool
+	traceExportSVG   string
+	traceOutputJSON  string
+	traceExportPath   string
+	traceExportFormat string
+	traceGasModelPath string
+	traceComments     []string
+	traceMetadata     []string
 )
 
 var traceCmd = &cobra.Command{
@@ -100,11 +104,61 @@ logs or piping to other tools. Add --no-color to disable ANSI colours.`,
 		if err != nil {
 			return errors.WrapUnmarshalFailed(err, "trace")
 		}
+		if traceGasModelPath != "" {
+			model, err := gasmodel.ParseGasModel(traceGasModelPath)
+			if err != nil {
+				return errors.WrapValidationError(fmt.Sprintf("failed to load gas model: %v", err))
+			}
+			trace.AnnotateExecutionCosts(executionTrace, nil, model)
+		}
+		if len(traceComments) > 0 || len(traceMetadata) > 0 {
+			opts, err := traceExportOptions()
+			if err != nil {
+				return err
+			}
+			executionTrace.Annotations.Comments = append(executionTrace.Annotations.Comments, opts.Comments...)
+			if executionTrace.Annotations.SessionMetadata == nil {
+				executionTrace.Annotations.SessionMetadata = make(map[string]string)
+			}
+			for k, v := range opts.SessionMetadata {
+				executionTrace.Annotations.SessionMetadata[k] = v
+			}
+		}
+
+		// --output-json: write deterministic schema'd JSON export and exit
+		if traceOutputJSON != "" {
+			data, err := executionTrace.ExportJSON("1.0", time.Now())
+			if err != nil {
+				return errors.WrapValidationError(fmt.Sprintf("failed to export trace json: %v", err))
+			}
+			if err := os.WriteFile(traceOutputJSON, data, 0644); err != nil {
+				return errors.WrapValidationError(fmt.Sprintf("failed to save JSON: %v", err))
+			}
+			fmt.Printf("%s Trace exported to: %s\n", visualizer.Symbol("success"), traceOutputJSON)
+			return nil
+		}
+
+		verbosity, err := trace.ParseVerbosity(traceVerbosity)
+		if err != nil {
+			return errors.WrapValidationError(err.Error())
+		}
+		executionTrace = trace.FilterExecutionTrace(executionTrace, verbosity)
 
 		// --print: render a rich ASCII tree report then exit (non-interactive)
 		if tracePrint {
+			if traceAnnotationsFlag != "" {
+				annMap, annErr := trace.LoadAnnotationFile(traceAnnotationsFlag)
+				if annErr != nil {
+					return errors.WrapValidationError(fmt.Sprintf("failed to load annotations: %v", annErr))
+				}
+				root := trace.BuildTraceNodeTree(executionTrace)
+				trace.MergeAnnotations(root, annMap)
+				trace.PrintTraceTree(root, trace.PrintOptions{NoColor: traceNoColor})
+				return nil
+			}
 			opts := trace.PrintOptions{
-				NoColor: traceNoColor,
+				NoColor:      traceNoColor,
+				EventSchemas: eventSchemas,
 			}
 			trace.PrintExecutionTrace(executionTrace, opts)
 			return nil
@@ -157,11 +211,11 @@ logs or piping to other tools. Add --no-color to disable ANSI colours.`,
 			if tracePrint {
 				return errors.WrapValidationError("cannot specify both --export and --print")
 			}
-			format := traceExportFormat
-			if format == "" {
-				format = "html"
+			opts, err := traceExportOptions()
+			if err != nil {
+				return err
 			}
-			if err := trace.ExportExecutionTrace(executionTrace, format, traceExportPath); err != nil {
+			if err := trace.ExportExecutionTraceWithOptions(executionTrace, traceExportFormat, traceExportPath, opts); err != nil {
 				return errors.WrapValidationError(fmt.Sprintf("failed to export trace: %v", err))
 			}
 			fmt.Printf("%s Trace exported to: %s\n", visualizer.Symbol("success"), traceExportPath)
@@ -181,11 +235,28 @@ func init() {
 	traceCmd.Flags().BoolVar(&traceNoColor, "no-color", false, "Disable ANSI colour output (also honoured via NO_COLOR env var)")
 	traceCmd.Flags().StringVar(&traceExportSVG, "export-svg", "", "Export call graph as SVG to specified file")
 	traceCmd.Flags().StringVar(&traceOutputJSON, "output-json", "", "Export trace as deterministic JSON to specified file (includes schema_version)")
-	traceCmd.Flags().StringVar(&traceExportMarkdown, "export-markdown", "", "Export trace as markdown for sharing in chat, email, or issue trackers")
-	traceCmd.Flags().StringVar(&traceExportPath, "export", "", "Export trace to the specified file path")
-	traceCmd.Flags().StringVar(&traceExportFormat, "export-format", "html", "Export format: html, markdown, md, text, or plain")
+	traceCmd.Flags().StringVar(&traceExportPath, "export", "", "Export trace report to a file")
+	traceCmd.Flags().StringVar(&traceExportFormat, "export-format", "html", "Trace export format (html, markdown)")
+	traceCmd.Flags().StringVar(&traceGasModelPath, "gas-model", "", "Gas model JSON used to annotate contract call cost estimates")
+	traceCmd.Flags().StringArrayVar(&traceComments, "comment", nil, "Comment to include in exported trace artifacts; repeatable")
+	traceCmd.Flags().StringArrayVar(&traceMetadata, "meta", nil, "Session metadata for exported trace artifacts in key=value form; repeatable")
 
 	_ = traceCmd.RegisterFlagCompletionFunc("theme", completeThemeFlag)
 
 	rootCmd.AddCommand(traceCmd)
+}
+
+func traceExportOptions() (trace.ExportOptions, error) {
+	metadata := make(map[string]string, len(traceMetadata))
+	for _, entry := range traceMetadata {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+			return trace.ExportOptions{}, errors.WrapValidationError("--meta values must use key=value format")
+		}
+		metadata[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+	}
+	return trace.ExportOptions{
+		Comments:        traceComments,
+		SessionMetadata: metadata,
+	}, nil
 }

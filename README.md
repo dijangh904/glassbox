@@ -175,6 +175,7 @@ Unregister the handler when no longer needed:
 - **[Architecture Overview](docs/architecture.md)**: Deep dive into how the Go CLI communicates with the Rust simulator, including data flow, IPC mechanisms, and design decisions.
 - **[Project Proposal](docs/proposal.md)**: Detailed project proposal and roadmap.
 - **[Source Mapping](docs/source-mapping.md)**: Implementation details for mapping WASM failures to Rust source code.
+- **[JSON CLI Output](docs/json-output.md)**: Machine-readable `--json` / `--format json` options for automation.
 - **[Debug Symbols Guide](docs/debug-symbols-guide.md)**: How to compile Soroban contracts with debug symbols.
 - **[Error Suggestions](docs/ERROR_SUGGESTIONS.md)**: Heuristic-based error suggestion engine for common Soroban errors.
 - **[Canonical JSON Serialization](docs/CANONICAL_JSON.md)**: Deterministic JSON serialization for audit log hashing.

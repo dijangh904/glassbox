@@ -27,6 +27,9 @@ type Resolver struct {
 	// contractSourceOverride is an explicit local path to the contract source
 	// directory. When set, it is used as a fallback before prompting the user.
 	contractSourceOverride string
+	// aliasResolver translates workspace-relative path prefixes to real
+	// filesystem paths before source files are opened.
+	aliasResolver *AliasResolver
 }
 
 // ResolverOption is a functional option for configuring the Resolver.
@@ -57,6 +60,14 @@ func WithRegistryClient(rc *RegistryClient) ResolverOption {
 func WithContractSource(path string) ResolverOption {
 	return func(r *Resolver) {
 		r.contractSourceOverride = path
+	}
+}
+
+// WithAliasResolver sets an AliasResolver that translates workspace-relative
+// path prefixes to real filesystem paths when resolving source file locations.
+func WithAliasResolver(ar *AliasResolver) ResolverOption {
+	return func(r *Resolver) {
+		r.aliasResolver = ar
 	}
 }
 
@@ -236,6 +247,16 @@ func (r *Resolver) AutoDiscoverLocalSymbols(projectRoot string, expectedHash str
 	}
 
 	return nil
+}
+
+// ResolveFilePath applies the alias resolver (if configured) to translate a
+// workspace-relative source file path to a real filesystem path.
+// Returns p unchanged when no alias resolver is set.
+func (r *Resolver) ResolveFilePath(p string) string {
+	if r.aliasResolver == nil {
+		return p
+	}
+	return r.aliasResolver.Resolve(p)
 }
 
 // InvalidateCache removes a specific contract from the cache.

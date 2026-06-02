@@ -18,16 +18,33 @@ type Registry struct {
 	bus      *LifecycleBus
 	// manifests holds the loaded manifests keyed by plugin name.
 	manifests map[string]*Manifest
+	// policy is the active sandbox policy; nil means no restrictions.
+	policy *Policy
 }
 
-// NewRegistry initializes a fresh registry
+// NewRegistry initializes a fresh registry with the default (permissive) policy.
 func NewRegistry() *Registry {
 	return &Registry{
 		loader:    NewLoader(),
 		cache:     make(map[string]json.RawMessage),
 		bus:       NewLifecycleBus(),
 		manifests: make(map[string]*Manifest),
+		policy:    DefaultPolicy(),
 	}
+}
+
+// SetPolicy replaces the active sandbox policy. Pass nil to remove all restrictions.
+func (r *Registry) SetPolicy(p *Policy) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.policy = p
+}
+
+// Policy returns the active sandbox policy.
+func (r *Registry) Policy() *Policy {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.policy
 }
 
 // Bus returns the lifecycle event bus so callers can subscribe to plugin events.
@@ -47,6 +64,16 @@ func (r *Registry) LoadFromDirectory(dir string) error {
 	if len(manifests) > 0 {
 		var loadErrors []error
 		for _, m := range manifests {
+			// Enforce sandbox policy before loading.
+			if err := r.policy.CheckManifest(m); err != nil {
+				loadErrors = append(loadErrors, fmt.Errorf("policy denied plugin %s: %w", m.Name, err))
+				r.bus.Emit(LifecyclePayload{
+					PluginName: m.Name,
+					Event:      EventError,
+					Err:        err,
+				})
+				continue
+			}
 			manifestDir := filepath.Join(dir, m.Name)
 			sp, err := NewSandboxedPlugin(m, manifestDir)
 			if err != nil {
@@ -108,6 +135,14 @@ func (r *Registry) RegisterManifest(manifestPath string) error {
 	m, err := LoadManifest(manifestPath)
 	if err != nil {
 		return err
+	}
+
+	// Enforce sandbox policy before creating the sandboxed plugin.
+	r.mu.RLock()
+	policy := r.policy
+	r.mu.RUnlock()
+	if err := policy.CheckManifest(m); err != nil {
+		return fmt.Errorf("policy denied plugin %s: %w", m.Name, err)
 	}
 
 	manifestDir := filepath.Dir(manifestPath)

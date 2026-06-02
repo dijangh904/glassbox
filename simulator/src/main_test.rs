@@ -66,6 +66,7 @@ mod restore_preamble_tests {
             memory_limit: None,
             restore_preamble: Some(restore_preamble),
             include_linear_memory: false,
+            skip_source_mapping: false,
         };
         // Simulate main logic: inject restore_preamble into host storage
         let sim_host = crate::runner::SimHost::new(None, None, None);

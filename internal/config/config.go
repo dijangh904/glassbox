@@ -38,6 +38,13 @@ type DebugConfig struct {
 	EnableSnapshots bool `json:"enable_snapshots"`
 }
 
+// ExternalSourceRepo maps a local source tree prefix to a remote repository URL.
+type ExternalSourceRepo struct {
+	Prefix    string `json:"prefix"`
+	RemoteURL string `json:"remote_url"`
+	Branch    string `json:"branch,omitempty"`
+}
+
 type Network string
 
 const (
@@ -96,6 +103,8 @@ type Config struct {
 	TelemetrySampleRate float64 `json:"telemetry_sample_rate,omitempty"`
 	// MaxTraceDepth is the maximum depth of the call tree before it is truncated.
 	MaxTraceDepth int `json:"max_trace_depth,omitempty"`
+	// ExternalSourceRepos maps local path prefixes to remote GitHub repositories for source links.
+	ExternalSourceRepos []ExternalSourceRepo `json:"external_source_repos,omitempty"`
 	// FailureThreshold is the number of failures before the circuit breaker opens.
 	FailureThreshold int `json:"failure_threshold,omitempty"`
 	// RetryTimeout is the duration in seconds to wait before retrying a failed endpoint.

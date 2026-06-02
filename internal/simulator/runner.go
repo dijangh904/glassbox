@@ -239,6 +239,7 @@ func (r *Runner) Run(ctx context.Context, req *SimulationRequest) (*SimulationRe
 	if err := r.applyProtocolConfig(req, proto); err != nil {
 		return nil, err
 	}
+	r.applySandboxConfig(req)
 
 	if r.MockTime != 0 {
 		req.Timestamp = r.MockTime
@@ -333,6 +334,20 @@ func (r *Runner) Run(ctx context.Context, req *SimulationRequest) (*SimulationRe
 	success = true
 
 	return &resp, nil
+}
+
+func (r *Runner) applySandboxConfig(req *SimulationRequest) {
+	if req == nil || !req.SandboxMode {
+		return
+	}
+	if req.CustomAuthCfg == nil {
+		req.CustomAuthCfg = make(map[string]interface{})
+	}
+	req.CustomAuthCfg["sandbox_mode"] = true
+	req.CustomAuthCfg["allowed_host_functions"] = append([]string(nil), req.AllowedHostFunctions...)
+	if req.MemoryLimit != nil {
+		req.CustomAuthCfg["memory_limit"] = *req.MemoryLimit
+	}
 }
 
 // limitedBuffer wraps bytes.Buffer with a size limit to prevent memory leaks

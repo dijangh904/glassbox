@@ -220,8 +220,11 @@ fn main() {
         }
     };
 
-    // Initialize source mapper if WASM is provided
-    let source_mapper = if let Some(wasm_base64) = &request.contract_wasm {
+    // Initialize source mapper if WASM is provided (unless skipped for raw replay)
+    let source_mapper = if request.skip_source_mapping {
+        eprintln!("--skip-source-mapping: bypassing DWARF source mapping");
+        None
+    } else if let Some(wasm_base64) = &request.contract_wasm {
         match base64::engine::general_purpose::STANDARD.decode(wasm_base64) {
             Ok(wasm_bytes) => {
                 let mapper = SourceMapper::new(wasm_bytes);

@@ -17,6 +17,7 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/dotandev/glassbox/internal/abi"
 	"github.com/dotandev/glassbox/internal/dwarf"
+	"github.com/dotandev/glassbox/internal/session"
 	"github.com/dotandev/glassbox/internal/visualizer"
 )
 
@@ -111,7 +112,25 @@ func NewInteractiveViewerWithWASM(trace *ExecutionTrace, wasmData []byte) *Inter
 // It installs a terminal-resize handler so that long contract IDs and XDR
 // strings reflow correctly whenever the window size changes.
 func (v *InteractiveViewer) Start() error {
+	defer v.saveViewerState()
 	termW := getTermWidth()
+	// Attempt to restore persisted viewer state for this transaction.
+	if st, ok, err := session.LoadViewerState(v.trace.TransactionHash); err == nil && ok {
+		if st.CurrentStep >= 0 && st.CurrentStep < len(v.trace.States) {
+			_, _ = v.trace.JumpToStep(st.CurrentStep)
+		}
+		if st.SearchQuery != "" {
+			v.search.IndexNodes(v.flatTraceNodes())
+			v.search.engine.SetQuery(st.SearchQuery)
+			v.search.engine.Search(v.search.flatNodes)
+			v.search.mode = SearchModeActive
+			for i := 1; i < st.CurrentMatch; i++ {
+				v.search.NextMatch()
+			}
+		}
+		v.eventFilter = st.EventFilter
+		v.hideStdLib = st.HideStdLib
+	}
 	fmt.Printf("%s Glassbox Interactive Trace Viewer\n", visualizer.Symbol("magnify"))
 	fmt.Println(separator(termW))
 	fmt.Printf("Transaction: %s\n", v.trace.TransactionHash)
@@ -138,6 +157,7 @@ func (v *InteractiveViewer) Start() error {
 				// Reprint current state with updated terminal width.
 				fmt.Print("\n")
 				v.displayCurrentState()
+				v.saveViewerState()
 				fmt.Print("\n> ")
 			case fetched := <-v.fetchCh:
 				v.handleFetchedState(fetched)
@@ -172,6 +192,9 @@ func (v *InteractiveViewer) Start() error {
 		if v.handleCommand(command) {
 			break
 		}
+		// Persist UI state after processing the command so resizes or exits
+		// don't lose the current view/selection.
+		v.saveViewerState()
 	}
 
 	close(done)
@@ -692,6 +715,21 @@ func (v *InteractiveViewer) handleFetchedState(f fetchedState) {
 	}
 	v.stateCache[f.step] = f.state
 	delete(v.fetchErr, f.step)
+}
+
+// saveViewerState persists minimal interactive UI state for this trace.
+func (v *InteractiveViewer) saveViewerState() {
+	if v.trace == nil || v.trace.TransactionHash == "" {
+		return
+	}
+	st := session.ViewerState{
+		CurrentStep:  v.trace.CurrentStep,
+		SearchQuery:  v.search.Query(),
+		CurrentMatch: v.search.CurrentMatchNumber(),
+		EventFilter:  v.eventFilter,
+		HideStdLib:   v.hideStdLib,
+	}
+	_ = session.SaveViewerState(v.trace.TransactionHash, st)
 }
 
 func (v *InteractiveViewer) statusBarLine(state *ExecutionState) string {

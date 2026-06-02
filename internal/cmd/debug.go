@@ -21,16 +21,21 @@ import (
 	"github.com/dotandev/glassbox/internal/config"
 	"github.com/dotandev/glassbox/internal/decenstorage"
 	"github.com/dotandev/glassbox/internal/decoder"
+	"github.com/dotandev/glassbox/internal/clioutput"
 	"github.com/dotandev/glassbox/internal/errors"
 	"github.com/dotandev/glassbox/internal/logger"
 	"github.com/dotandev/glassbox/internal/lto"
+	"github.com/dotandev/glassbox/internal/perfmetrics"
 	"github.com/dotandev/glassbox/internal/replay"
 	"github.com/dotandev/glassbox/internal/rpc"
 	"github.com/dotandev/glassbox/internal/security"
 	"github.com/dotandev/glassbox/internal/session"
 	"github.com/dotandev/glassbox/internal/simulator"
 	"github.com/dotandev/glassbox/internal/snapshot"
+	"github.com/dotandev/glassbox/internal/sourcemap"
 	"github.com/dotandev/glassbox/internal/telemetry"
+	"github.com/dotandev/glassbox/internal/trace"
+	"github.com/dotandev/glassbox/internal/trace"
 	"github.com/dotandev/glassbox/internal/tokenflow"
 	simtypes "github.com/dotandev/glassbox/internal/types"
 	"github.com/dotandev/glassbox/internal/version"
@@ -84,7 +89,10 @@ var (
 	saveSnapshotsFlag    string
 	wasmBase64           string
 	contractSourceFlag   string
-	debugDryRunFlag      bool
+	debugJSONFlag        bool
+	debugFormatFlag      string
+	skipSourceMappingFlag bool
+	traceVerbosityFlag   string
 )
 
 // DebugCommand holds dependencies for the debug command
@@ -291,9 +299,36 @@ Local WASM Replay Mode:
 				return errors.WrapInvalidNetwork(compareNetworkFlag)
 			}
 		}
+
+		if liveReplayFlag && (xdrFileFlag != "" || jsonFileFlag != "") {
+			return errors.WrapValidationError("--live/--latest-ledger cannot be used with local envelope input")
+		}
+		if liveReplayFlag && demoMode {
+			return errors.WrapValidationError("--live/--latest-ledger cannot be used with --demo")
+		}
+		if opIndexFlag < -1 {
+			return errors.WrapValidationError("--op must be a non-negative integer or omitted")
+		}
+		if secureWorkspaceFlag {
+			if contractSourceFlag != "" {
+				if _, err := validateSecureArtifactPath(contractSourceFlag); err != nil {
+					return err
+				}
+			}
+			if wasmPath != "" {
+				if _, err := validateSecureArtifactPath(wasmPath); err != nil {
+					return err
+				}
+			}
+		}
+		if pinEndpointFlag != "" && rpcURLFlag != "" && pinEndpointFlag != rpcURLFlag {
+			return errors.WrapValidationError("--pin-endpoint must match --rpc-url when both are provided")
+		}
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, cmdArgs []string) error {
+		perfCollector := perfmetrics.NewCollector()
+
 		if verbose {
 			logger.SetLevel(slog.LevelInfo)
 		} else {
@@ -431,6 +466,14 @@ Local WASM Replay Mode:
 			}
 		}
 
+		if pinEndpointFlag != "" {
+			if rpcURLFlag == "" {
+				opts = append(opts, rpc.WithHorizonURL(pinEndpointFlag))
+				horizonURL = pinEndpointFlag
+			}
+			fmt.Printf("Pinned RPC endpoint: %s\n", pinEndpointFlag)
+		}
+
 		client, err := rpc.NewClient(opts...)
 		if err != nil {
 			return errors.WrapValidationError(fmt.Sprintf("failed to create client: %v", err))
@@ -514,15 +557,17 @@ Local WASM Replay Mode:
 			fmt.Printf("Envelope size: %d bytes\n", len(resp.EnvelopeXdr))
 		} else {
 			fmt.Printf("Fetching transaction: %s\n", txHash)
+			_t0 := time.Now()
 			resp, err = client.GetTransaction(ctx, txHash)
+			if showMetricsFlag {
+				perfCollector.RecordRPC("getTransaction", time.Since(_t0), err != nil)
+			}
 			if err != nil {
 				return errors.WrapRPCConnectionFailed(err)
 			}
 
 			fmt.Printf("Transaction fetched successfully. Envelope size: %d bytes\n", len(resp.EnvelopeXdr))
 		}
-
-		// Extract ledger keys for replay
 		keys, err := extractLedgerKeys(resp.ResultMetaXdr)
 		if err != nil {
 			return errors.WrapUnmarshalFailed(err, "result meta")
@@ -557,6 +602,7 @@ Local WASM Replay Mode:
 		}
 
 		var lastSimResp *simulator.SimulationResponse
+		useLiveLedger := liveReplayFlag
 
 		// Collected per-timestamp states written to disk when --save-snapshots is set.
 		type snapshotEntry struct {
@@ -582,6 +628,15 @@ Local WASM Replay Mode:
 					}
 					ledgerEntries = snap.ToMap()
 					fmt.Printf("Loaded %d ledger entries from snapshot\n", len(ledgerEntries))
+				} else if useLiveLedger {
+					if localEnvelopeMode {
+						return errors.WrapValidationError("--live/--latest-ledger cannot be used with local envelope input")
+					}
+					fmt.Println("Using latest validated ledger state for live replay...")
+					ledgerEntries, err = client.GetLedgerEntries(ctx, keys)
+					if err != nil {
+						return errors.WrapRPCConnectionFailed(err)
+					}
 				} else {
 					// Try to extract from metadata first, fall back to fetching
 					ledgerEntries, err = rpc.ExtractLedgerEntriesFromMeta(resp.ResultMetaXdr)
@@ -629,9 +684,16 @@ Local WASM Replay Mode:
 					simReq.ProtocolVersion = &protocolVersionFlag
 					fmt.Printf("Using protocol version override: %d\n", protocolVersionFlag)
 				}
+				applyDebugSimulationOptions(simReq)
 				applySimulationFeeMocks(simReq)
 
+				if showMetricsFlag {
+					perfCollector.StartSim()
+				}
 				simResp, err = runner.Run(ctx, simReq)
+				if showMetricsFlag {
+					perfCollector.StopSim()
+				}
 				if err != nil {
 					return errors.WrapSimulationFailed(err, "")
 				}
@@ -661,12 +723,20 @@ Local WASM Replay Mode:
 					defer wg.Done()
 					var entries map[string]string
 					var extractErr error
-					entries, extractErr = rpc.ExtractLedgerEntriesFromMeta(resp.ResultMetaXdr)
-					if extractErr != nil {
+					if useLiveLedger {
 						entries, extractErr = client.GetLedgerEntries(ctx, keys)
 						if extractErr != nil {
 							primaryErr = extractErr
 							return
+						}
+					} else {
+						entries, extractErr = rpc.ExtractLedgerEntriesFromMeta(resp.ResultMetaXdr)
+						if extractErr != nil {
+							entries, extractErr = client.GetLedgerEntries(ctx, keys)
+							if extractErr != nil {
+								primaryErr = extractErr
+								return
+							}
 						}
 					}
 					if len(overrideEntries) > 0 {
@@ -680,6 +750,7 @@ Local WASM Replay Mode:
 						Timestamp:       ts,
 						EnableSnapshots: snapshotsFlag,
 					}
+					applyDebugSimulationOptions(primaryReq)
 					applySimulationFeeMocks(primaryReq)
 					primaryResult, primaryErr = runner.Run(ctx, primaryReq)
 				}()
@@ -705,12 +776,22 @@ Local WASM Replay Mode:
 						return
 					}
 
-					entries, extractErr := rpc.ExtractLedgerEntriesFromMeta(compareResp.ResultMetaXdr)
+var entries map[string]string
+				var extractErr error
+				if useLiveLedger {
+					entries, extractErr = compareClient.GetLedgerEntries(ctx, keys)
+					if extractErr != nil {
+						compareErr = extractErr
+						return
+					}
+				} else {
+					entries, extractErr = rpc.ExtractLedgerEntriesFromMeta(compareResp.ResultMetaXdr)
 					if extractErr != nil {
 						entries, extractErr = compareClient.GetLedgerEntries(ctx, keys)
 						if extractErr != nil {
 							compareErr = extractErr
 							return
+						}
 						}
 					}
 
@@ -726,6 +807,7 @@ Local WASM Replay Mode:
 						Timestamp:       ts,
 						EnableSnapshots: snapshotsFlag,
 					}
+					applyDebugSimulationOptions(compareReq)
 					applySimulationFeeMocks(compareReq)
 					compareResult, compareErr = runner.Run(ctx, compareReq)
 				}()
@@ -804,40 +886,15 @@ Local WASM Replay Mode:
 		fmt.Printf("\n=== Security Analysis ===\n")
 		secDetector := security.NewDetector()
 		findings := secDetector.Analyze(resp.EnvelopeXdr, resp.ResultMetaXdr, lastSimResp.Events, lastSimResp.Logs)
-		if len(findings) == 0 {
-			fmt.Printf("%s No security issues detected\n", visualizer.Success())
-		} else {
-			verifiedCount := 0
-			heuristicCount := 0
-
-			for _, finding := range findings {
-				if finding.Type == security.FindingVerifiedRisk {
-					verifiedCount++
-				} else {
-					heuristicCount++
-				}
-			}
-
-			if verifiedCount > 0 {
-				fmt.Printf("\n[!]  VERIFIED SECURITY RISKS: %d\n", verifiedCount)
-			}
-			if heuristicCount > 0 {
-				fmt.Printf("* HEURISTIC WARNINGS: %d\n", heuristicCount)
-			}
-
-			fmt.Printf("\nFindings:\n")
-			for i, finding := range findings {
-				icon := "*"
-				if finding.Type == security.FindingVerifiedRisk {
-					icon = "[!]"
-				}
-				fmt.Printf("%d. %s [%s] %s - %s\n", i+1, icon, finding.Type, finding.Severity, finding.Title)
-				fmt.Printf("   %s\n", finding.Description)
-				if finding.Evidence != "" {
-					fmt.Printf("   Evidence: %s\n", finding.Evidence)
-				}
+		if contractSourceFlag != "" {
+			sourceFindings, scanErr := secDetector.ScanSourcePath(contractSourceFlag, nil)
+			if scanErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: source vulnerability scan failed: %v\n", scanErr)
+			} else {
+				findings = append(findings, sourceFindings...)
 			}
 		}
+		printSecurityFindings(findings)
 
 		// Analysis: Token Flows
 		hasTokenFlows := false
@@ -862,6 +919,7 @@ Local WASM Replay Mode:
 			ResultMetaXdr:   resp.ResultMetaXdr,
 			EnableSnapshots: snapshotsFlag,
 		}
+		applyDebugSimulationOptions(simReq)
 		applySimulationFeeMocks(simReq)
 		simReqJSON, err := json.Marshal(simReq)
 		if err != nil {
@@ -883,6 +941,7 @@ Local WASM Replay Mode:
 			EnvelopeXdr:     resp.EnvelopeXdr,
 			ResultXdr:       resp.ResultXdr,
 			ResultMetaXdr:   resp.ResultMetaXdr,
+			PinnedEndpoint:  pinEndpointFlag,
 			SimRequestJSON:  string(simReqJSON),
 			SimResponseJSON: string(simRespJSON),
 			ErstVersion:     version.Version,
@@ -941,6 +1000,10 @@ Local WASM Replay Mode:
 					fmt.Printf("Arweave URL  : %s\n", result.URL)
 				}
 			}
+		}
+
+		if showMetricsFlag {
+			perfCollector.Print(nil)
 		}
 
 		return nil
@@ -1019,12 +1082,14 @@ func newLocalWasmSimulationRequest(forceNoCache bool) *simulator.SimulationReque
 		WasmPath:        &wasmPath,
 		NoCache:         noCacheFlag || forceNoCache,
 		MockArgs:        &args,
-		ContractWasm:    &wasmBase64, // Pass the WASM binary for source mapping
-		EnableSnapshots: snapshotsFlag,
+		ContractWasm:        &wasmBase64, // Pass the WASM binary for source mapping
+		EnableSnapshots:     snapshotsFlag,
+		SkipSourceMapping:   skipSourceMappingFlag,
 	}
 	if contractSourceFlag != "" {
 		req.ContractSourcePath = &contractSourceFlag
 	}
+	applyDebugSimulationOptions(req)
 	applySimulationFeeMocks(req)
 	return req
 }
@@ -1347,6 +1412,25 @@ func collectContractIDsFromDiagnosticEvents(events []simulator.DiagnosticEvent) 
 }
 
 func printSimulationResult(network string, res *simulator.SimulationResponse) {
+	if clioutput.WantsJSON(debugJSONFlag, debugFormatFlag) {
+		payload := map[string]interface{}{
+			"network": network,
+			"result":  res,
+		}
+		if traceVerbosityFlag != "" {
+			if v, err := trace.ParseVerbosity(traceVerbosityFlag); err == nil {
+				payload["verbosity"] = traceVerbosityFlag
+				if res != nil {
+					filtered := *res
+					filtered.DiagnosticEvents = trace.FilterDiagnosticEvents(res.DiagnosticEvents, v)
+					payload["result"] = &filtered
+				}
+			}
+		}
+		_ = clioutput.WriteStdout("debug", payload)
+		return
+	}
+
 	// Section header
 	sep := strings.Repeat("─", 60)
 	fmt.Printf("\n%s\n", visualizer.Colorize("  "+sep, "dim"))
@@ -1426,6 +1510,14 @@ func printSimulationResult(network string, res *simulator.SimulationResponse) {
 		)
 
 		fmt.Printf("    Operations:       %d\n", res.BudgetUsage.OperationsCount)
+
+		// Add fee estimate
+		gasEst, err := simulator.ExtractGasEstimation(&simulator.SimulationResponse{
+			BudgetUsage: res.BudgetUsage,
+		})
+		if err == nil {
+			fmt.Printf("    Fee Estimate: %d–%d stroops\n", gasEst.EstimatedFeeLowerBound, gasEst.EstimatedFeeUpperBound)
+		}
 	}
 
 	// Diagnostic events
@@ -1449,6 +1541,27 @@ func printSimulationResult(network string, res *simulator.SimulationResponse) {
 			fmt.Printf("    [%d] %s", i+1, visualizer.Colorize(event.EventType, eventTypeColor))
 			if event.ContractID != nil {
 				fmt.Printf("  %s", visualizer.Colorize(*event.ContractID, "dim"))
+			}
+			// Add resource info: CPU, Mem, and Fee for this event
+			if event.CPU != nil || event.Mem != nil {
+				var cpuStr, memStr, feeStr string
+				if event.CPU != nil {
+					cpuStr = fmt.Sprintf("CPU: %d", *event.CPU)
+				}
+				if event.Mem != nil {
+					memStr = fmt.Sprintf("Mem: %d", *event.Mem)
+				}
+				if event.CPU != nil && event.Mem != nil {
+					fee := (*event.CPU / 10000) + (*event.Mem / (64*1024))
+					feeStr = fmt.Sprintf("Fee: %d stroops", fee)
+				}
+				parts := []string{}
+				if cpuStr != "" { parts = append(parts, cpuStr) }
+				if memStr != "" { parts = append(parts, memStr) }
+				if feeStr != "" { parts = append(parts, feeStr) }
+				if len(parts) > 0 {
+					fmt.Printf("  %s", strings.Join(parts, " "))
+				}
 			}
 			if deprecatedFn, ok := deprecatedHostFunctionInDiagnosticEvent(event); ok {
 				fmt.Printf("  %s %s",
@@ -1637,6 +1750,93 @@ func loadTransactionEnvelopeInput(xdrPath, jsonPath, resultMetaPath string) (str
 	return envelopeXdr, resultMetaXdr, network, nil
 }
 
+func parseTransactionEnvelopeOperations(envelopeXdr string) ([]xdr.Operation, error) {
+	if strings.TrimSpace(envelopeXdr) == "" {
+		return nil, nil
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(envelopeXdr))
+	if err != nil {
+		return nil, err
+	}
+
+	var envelope xdr.TransactionEnvelope
+	if err := xdr.SafeUnmarshal(decoded, &envelope); err != nil {
+		return nil, err
+	}
+
+	switch envelope.Type {
+	case xdr.EnvelopeTypeEnvelopeTypeTx:
+		return envelope.V1.Tx.Operations, nil
+	case xdr.EnvelopeTypeEnvelopeTypeTxV0:
+		return envelope.V0.Tx.Operations, nil
+	case xdr.EnvelopeTypeEnvelopeTypeTxFeeBump:
+		return envelope.FeeBump.Tx.InnerTx.V1.Tx.Operations, nil
+	default:
+		return nil, fmt.Errorf("unsupported transaction envelope type: %v", envelope.Type)
+	}
+}
+
+func formatOperationSummary(op xdr.Operation) string {
+	typeName := op.Body.Type.String()
+	summary := typeName
+
+	switch op.Body.Type {
+	case xdr.OperationTypePayment:
+		if op.Body.PaymentOp != nil {
+			summary = fmt.Sprintf("%s -> %s", typeName, op.Body.PaymentOp.Destination)
+		}
+	case xdr.OperationTypeManageData:
+		if op.Body.ManageDataOp != nil {
+			summary = fmt.Sprintf("%s %s", typeName, op.Body.ManageDataOp.DataName)
+		}
+	case xdr.OperationTypeInvokeHostFunction:
+		summary = fmt.Sprintf("%s", typeName)
+	case xdr.OperationTypeInvokeContract:
+		summary = fmt.Sprintf("%s", typeName)
+	}
+
+	return summary
+}
+
+func validateSecureArtifactPath(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+
+	if _, err := os.Stat(path); err != nil {
+		return "", errors.WrapValidationError(fmt.Sprintf("secure workspace path not accessible: %s: %v", path, err))
+	}
+
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", errors.WrapValidationError(fmt.Sprintf("failed to resolve secure workspace path %q: %v", path, err))
+	}
+	resolved, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return "", errors.WrapValidationError(fmt.Sprintf("failed to resolve secure workspace symlink %q: %v", path, err))
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", errors.WrapValidationError(fmt.Sprintf("failed to determine current directory for secure workspace validation: %v", err))
+	}
+	cwd, err = filepath.Abs(cwd)
+	if err != nil {
+		return "", errors.WrapValidationError(fmt.Sprintf("failed to resolve current directory: %v", err))
+	}
+
+	rel, err := filepath.Rel(cwd, resolved)
+	if err != nil {
+		return "", errors.WrapValidationError(fmt.Sprintf("failed to validate secure workspace path %q: %v", path, err))
+	}
+	if rel == ".." || strings.HasPrefix(rel, fmt.Sprintf("..%c", filepath.Separator)) {
+		return "", errors.WrapValidationError(fmt.Sprintf("secure workspace disallows path outside current workspace: %s", path))
+	}
+
+	return resolved, nil
+}
+
 func budgetIndicator(pct float64) (color, suffix string) {
 	switch {
 	case pct >= 95.0:
@@ -1823,6 +2023,16 @@ func collectVisibleSections(resp *simulator.SimulationResponse, findings []secur
 	return sections
 }
 
+func applyDebugSimulationOptions(req *simulator.SimulationRequest) {
+	if req == nil {
+		return
+	}
+	req.SkipSourceMapping = skipSourceMappingFlag
+	if contractSourceFlag != "" {
+		req.ContractSourcePath = &contractSourceFlag
+	}
+}
+
 func applySimulationFeeMocks(req *simulator.SimulationRequest) {
 	if req == nil {
 		return
@@ -1904,6 +2114,7 @@ func runFromRegistry(ctx context.Context, path string) error {
 			LedgerEntries: entry.Snapshot.ToMap(),
 			Timestamp:     entry.Timestamp,
 		}
+		applyDebugSimulationOptions(simReq)
 		applySimulationFeeMocks(simReq)
 
 		simResp, err := runner.Run(ctx, simReq)
@@ -1948,6 +2159,12 @@ func init() {
 	debugCmd.Flags().BoolVar(&hotReloadFlag, "hot-reload", false, "Hot reload local WASM changes during debug session (requires --wasm)")
 	debugCmd.Flags().DurationVar(&hotReloadInterval, "hot-reload-interval", 500*time.Millisecond, "Polling interval fallback for hot reload (e.g. 500ms)")
 	debugCmd.Flags().BoolVar(&snapshotsFlag, "snapshots", false, "Enable simulator snapshot capture (default: disabled)")
+	debugCmd.Flags().BoolVar(&liveReplayFlag, "live", false, "Replay transaction against the latest validated ledger state")
+	debugCmd.Flags().BoolVar(&liveReplayFlag, "latest-ledger", false, "Alias for --live")
+	debugCmd.Flags().IntVar(&opIndexFlag, "op", -1, "Select a specific zero-based operation index for multi-operation transactions")
+	debugCmd.Flags().IntVar(&opIndexFlag, "operation", -1, "Legacy alias for --op")
+	debugCmd.Flags().BoolVar(&secureWorkspaceFlag, "secure-workspace", false, "Run in a secure workspace mode with trusted read-only artifacts")
+	debugCmd.Flags().StringVar(&pinEndpointFlag, "pin-endpoint", "", "Persist a pinned RPC endpoint with the debug session")
 	debugCmd.Flags().Uint32Var(&mockBaseFeeFlag, "mock-base-fee", 0, "Override base fee (stroops) for local fee sufficiency checks")
 	debugCmd.Flags().Uint64Var(&mockGasPriceFlag, "mock-gas-price", 0, "Override gas price multiplier for local fee sufficiency checks")
 	debugCmd.Flags().StringVar(&themeFlag, "theme", "", "Color theme override (dark, light, none)")
@@ -1957,7 +2174,10 @@ func init() {
 	debugCmd.Flags().StringVar(&loadSnapshotsFlag, "load-snapshots", "", "Load simulation from a snapshot registry")
 	debugCmd.Flags().StringVar(&saveSnapshotsFlag, "save-snapshots", "", "Save simulation results to a snapshot registry")
 	debugCmd.Flags().StringVar(&contractSourceFlag, "contract-source", "", "Explicit path to contract source directory for source mapping (used when auto-discovery fails)")
-	debugCmd.Flags().BoolVar(&debugDryRunFlag, "dry-run", false, "Validate debug parameters and environment without executing a replay")
+	debugCmd.Flags().BoolVar(&debugJSONFlag, "json", false, "Output simulation results as machine-readable JSON")
+	debugCmd.Flags().StringVar(&debugFormatFlag, "format", "text", "Output format: text or json")
+	debugCmd.Flags().BoolVar(&skipSourceMappingFlag, "skip-source-mapping", false, "Skip DWARF source mapping for faster raw trace replay")
+	debugCmd.Flags().StringVar(&traceVerbosityFlag, "trace-verbosity", "normal", "Trace detail level: summary, normal, or verbose")
 	rootCmd.AddCommand(debugCmd)
 }
 
@@ -2021,20 +2241,28 @@ func checkLTOWarning(wasmFilePath string) {
 func displaySourceLocation(loc *simulator.SourceLocation) {
 	fmt.Printf("%s Location: %s:%d:%d\n", visualizer.Symbol("location"), loc.File, loc.Line, loc.Column)
 
+	// Resolve path aliases when --source-alias config is provided.
+	filePath := loc.File
+	if sourceAliasFlag != "" {
+		if aliases, err := sourcemap.LoadAliasConfig(sourceAliasFlag); err == nil {
+			filePath = sourcemap.NewAliasResolver(aliases).Resolve(filePath)
+		}
+	}
+
 	// Try to find the file
-	content, err := os.ReadFile(loc.File)
+	content, err := os.ReadFile(filePath)
 	if err != nil {
 		// Try override path first when --contract-source is set
 		if contractSourceFlag != "" {
-			if c, err := os.ReadFile(filepath.Join(contractSourceFlag, loc.File)); err == nil {
+			if c, err := os.ReadFile(filepath.Join(contractSourceFlag, filePath)); err == nil {
 				content = c
-			} else if c, err := os.ReadFile(filepath.Join(contractSourceFlag, filepath.Base(loc.File))); err == nil {
+			} else if c, err := os.ReadFile(filepath.Join(contractSourceFlag, filepath.Base(filePath))); err == nil {
 				content = c
 			}
 		}
 		// Try to find in current directory or src
 		if content == nil {
-			if c, err := os.ReadFile(filepath.Join("src", loc.File)); err == nil {
+			if c, err := os.ReadFile(filepath.Join("src", filePath)); err == nil {
 				content = c
 			} else {
 				return

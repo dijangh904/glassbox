@@ -8,12 +8,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/dotandev/glassbox/internal/clioutput"
 	"github.com/dotandev/glassbox/internal/errors"
 	"github.com/dotandev/glassbox/internal/signer"
 	"github.com/spf13/cobra"
@@ -46,17 +48,49 @@ var (
 	auditSignPKCS11TokenLabel string
 	auditSignPKCS11KeyLabel   string
 	auditSignPKCS11KeyIDHex   string
+
+	// Provenance flags — optional metadata attached to the signed audit log.
+	auditSignSignerIdentity       string
+	auditSignKeyID                string
+	auditSignCertChainFile        string
+	auditSignPreviousSignatureHash string
 )
+
+// SignatureProvenance carries metadata about the signing key and identity,
+// enabling independent verification of who signed an audit log and with what key.
+type SignatureProvenance struct {
+	// SignerIdentity is a human-readable identifier for the signing entity
+	// (e.g. "ops-team@example.com", "ci-pipeline", "hsm-slot-0").
+	SignerIdentity string `json:"signer_identity,omitempty"`
+
+	// KeyID is an opaque identifier for the specific key used to sign
+	// (e.g. PKCS#11 CKA_LABEL, KMS key ARN, or a fingerprint).
+	KeyID string `json:"key_id,omitempty"`
+
+	// Algorithm describes the signing algorithm (e.g. "Ed25519", "ECDSA-P256").
+	Algorithm string `json:"algorithm,omitempty"`
+
+	// CertificateChain holds PEM-encoded certificates in order from leaf to
+	// root, enabling chain-of-trust verification when an HSM or PKI is used.
+	// May be empty for software/bare-key signing.
+	CertificateChain []string `json:"certificate_chain,omitempty"`
+
+	// PreviousSignatureHash is the hex-encoded SHA-256 of the immediately
+	// preceding signed audit log, forming a tamper-evident verification chain.
+	// Empty for the first entry in a chain.
+	PreviousSignatureHash string `json:"previous_signature_hash,omitempty"`
+}
 
 // SignedAuditLog is the JSON output produced by audit:sign.
 type SignedAuditLog struct {
-	Version   string          `json:"version"`
-	Timestamp time.Time       `json:"timestamp"`
-	TraceHash string          `json:"trace_hash"`
-	Signature string          `json:"signature"`
-	PublicKey string          `json:"public_key"`
-	Provider  string          `json:"provider"`
-	Payload   json.RawMessage `json:"payload"`
+	Version    string               `json:"version"`
+	Timestamp  time.Time            `json:"timestamp"`
+	TraceHash  string               `json:"trace_hash"`
+	Signature  string               `json:"signature"`
+	PublicKey  string               `json:"public_key"`
+	Provider   string               `json:"provider"`
+	Provenance *SignatureProvenance  `json:"provenance,omitempty"`
+	Payload    json.RawMessage      `json:"payload"`
 }
 
 var auditSignCmd = &cobra.Command{
@@ -136,6 +170,18 @@ func init() {
 		"PKCS#11 key CKA_ID in hex (overrides GLASSBOX_PKCS11_KEY_ID)")
 	auditSignCmd.Flags().BoolVar(&auditSignValidateOnly, "validate-only", false,
 		"Run PKCS#11 preflight checks and exit without signing")
+	auditSignCmd.Flags().BoolVar(&auditSignJSONFlag, "json", false,
+		"Wrap signed audit log output in a schema-versioned JSON envelope")
+
+	// Provenance flags
+	auditSignCmd.Flags().StringVar(&auditSignSignerIdentity, "signer-identity", "",
+		"Human-readable signer identity (e.g. email, team name) stored in provenance metadata")
+	auditSignCmd.Flags().StringVar(&auditSignKeyID, "key-id", "",
+		"Opaque key identifier stored in provenance metadata (e.g. PKCS#11 label, KMS ARN)")
+	auditSignCmd.Flags().StringVar(&auditSignCertChainFile, "cert-chain", "",
+		"Path to a PEM file containing the certificate chain (leaf first) for provenance")
+	auditSignCmd.Flags().StringVar(&auditSignPreviousSignatureHash, "previous-signature-hash", "",
+		"Hex-encoded SHA-256 of the previous signed audit log to form a verification chain")
 
 	rootCmd.AddCommand(auditSignCmd)
 }
@@ -200,6 +246,15 @@ func runAuditSign(cmd *cobra.Command, args []string) error {
 		PublicKey: hex.EncodeToString(publicKey),
 		Provider:  providerName,
 		Payload:   json.RawMessage(payloadBytes),
+	}
+
+	// Attach provenance metadata when any provenance flag is set.
+	prov, err := buildProvenance(providerName)
+	if err != nil {
+		return err
+	}
+	if prov != nil {
+		auditLog.Provenance = prov
 	}
 
 	output, err := json.MarshalIndent(auditLog, "", "  ")
@@ -329,3 +384,58 @@ func runPkcs11Preflight(cmd *cobra.Command) error {
 	return errors.WrapValidationError("PKCS#11 preflight checks failed; review the output above for remediation steps")
 }
 
+
+// buildProvenance constructs a SignatureProvenance from CLI flags.
+// Returns nil when no provenance flags are set (backward-compatible behaviour).
+func buildProvenance(providerName string) (*SignatureProvenance, error) {
+	hasAny := auditSignSignerIdentity != "" ||
+		auditSignKeyID != "" ||
+		auditSignCertChainFile != "" ||
+		auditSignPreviousSignatureHash != ""
+
+	if !hasAny {
+		return nil, nil
+	}
+
+	prov := &SignatureProvenance{
+		SignerIdentity:        auditSignSignerIdentity,
+		KeyID:                 auditSignKeyID,
+		PreviousSignatureHash: auditSignPreviousSignatureHash,
+	}
+
+	// Derive algorithm from provider name.
+	switch providerName {
+	case "pkcs11":
+		prov.Algorithm = "ECDSA-P256"
+	default:
+		prov.Algorithm = "Ed25519"
+	}
+
+	// Load certificate chain from file when provided.
+	if auditSignCertChainFile != "" {
+		chainPEM, err := os.ReadFile(auditSignCertChainFile)
+		if err != nil {
+			return nil, errors.WrapValidationError(fmt.Sprintf("failed to read cert chain file: %v", err))
+		}
+		prov.CertificateChain = parsePEMChain(chainPEM)
+	}
+
+	return prov, nil
+}
+
+// parsePEMChain splits a PEM file into individual certificate strings.
+func parsePEMChain(data []byte) []string {
+	var certs []string
+	rest := data
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type == "CERTIFICATE" {
+			certs = append(certs, string(pem.EncodeToMemory(block)))
+		}
+	}
+	return certs
+}

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // ValidationError represents a schema validation error
@@ -95,6 +96,10 @@ func (v *Validator) ValidateRequest(req *SimulationRequest) error {
 		if err := v.validateAuthTraceOptions(req.AuthTraceOpts); err != nil {
 			return err
 		}
+	}
+
+	if err := v.validateSandboxPolicy(req); err != nil {
+		return err
 	}
 
 	if req.Timestamp != 0 {
@@ -259,6 +264,24 @@ func (v *Validator) validateAuthTraceOptions(opts *AuthTraceOptions) error {
 		return &ValidationError{Field: "auth_trace_opts.max_event_depth", Message: "exceeds maximum of 1000", Code: "ERR_VALUE_TOO_HIGH"}
 	}
 
+	return nil
+}
+
+func (v *Validator) validateSandboxPolicy(req *SimulationRequest) error {
+	if req == nil || !req.SandboxMode {
+		return nil
+	}
+	if req.MemoryLimit == nil || *req.MemoryLimit == 0 {
+		return &ValidationError{Field: "memory_limit", Message: "sandbox mode requires an explicit non-zero memory limit", Code: "ERR_SANDBOX_MEMORY_LIMIT_REQUIRED"}
+	}
+	if len(req.AllowedHostFunctions) == 0 {
+		return &ValidationError{Field: "allowed_host_functions", Message: "sandbox mode requires an explicit host function allowlist", Code: "ERR_SANDBOX_HOST_ALLOWLIST_REQUIRED"}
+	}
+	for _, fn := range req.AllowedHostFunctions {
+		if strings.TrimSpace(fn) == "" {
+			return &ValidationError{Field: "allowed_host_functions", Message: "host function names cannot be empty", Code: "ERR_EMPTY_FIELD"}
+		}
+	}
 	return nil
 }
 

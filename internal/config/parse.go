@@ -4,6 +4,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -61,6 +62,13 @@ func loadFromEnv(cfg *Config) error { //nolint:unused // Reserved for future con
 			return errors.WrapValidationError("GLASSBOX_REQUEST_TIMEOUT must be an integer")
 		}
 		cfg.RequestTimeout = n
+	}
+
+	if v := os.Getenv("GLASSBOX_EXTERNAL_SOURCE_MAP"); v != "" {
+		var repos []ExternalSourceRepo
+		if err := json.Unmarshal([]byte(v), &repos); err == nil {
+			cfg.ExternalSourceRepos = repos
+		}
 	}
 
 	if v := os.Getenv("GLASSBOX_MAX_TRACE_DEPTH"); v != "" {
@@ -267,6 +275,12 @@ func (c *Config) parseTOML(content string) error {
 				return errors.WrapValidationError("failure_threshold must be an integer")
 			}
 			c.FailureThreshold = n
+		case "external_source_map":
+			var repos []ExternalSourceRepo
+			if err := json.Unmarshal([]byte(value), &repos); err != nil {
+				return errors.WrapValidationError("external_source_map must be a JSON array of {prefix, remote_url, branch}")
+			}
+			c.ExternalSourceRepos = repos
 		case "retry_timeout":
 			n, err := strconv.Atoi(value)
 			if err != nil {

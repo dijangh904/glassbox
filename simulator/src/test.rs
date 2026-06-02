@@ -424,6 +424,8 @@ mod contract_execution_tests {
             resource_calibration: None,
             memory_limit: None,
             restore_preamble: None,
+            include_linear_memory: false,
+            skip_source_mapping: false,
         };
         let result = execute_operations(&host, &operations, &request, None, &mut coverage);
         assert!(result.is_ok());

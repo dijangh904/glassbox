@@ -34,6 +34,7 @@ type ExecutionState struct {
 	SourceFile       string                  `json:"source_file,omitempty"`
 	SourceLine       int                     `json:"source_line,omitempty"`
 	GitHubLink       string                  `json:"github_link,omitempty"`
+	Cost             *CostAnnotation         `json:"cost,omitempty"`
 }
 
 // DefaultSnapshotInterval is the number of steps between state snapshots.
@@ -62,6 +63,7 @@ type ExecutionTrace struct {
 	States           []ExecutionState            `json:"states"`
 	Snapshots        []StateSnapshot             `json:"snapshots"`
 	DiagnosticEvents []simulator.DiagnosticEvent `json:"diagnostic_events,omitempty"`
+	Annotations      TraceAnnotations            `json:"annotations,omitempty"`
 	CurrentStep      int                         `json:"current_step"`
 	SnapshotInterval int                         `json:"snapshot_interval"`
 
@@ -321,6 +323,7 @@ func (t *ExecutionTrace) ExportJSON(schemaVersion string, generatedAt time.Time)
 		SourceFile       string                 `json:"source_file,omitempty"`
 		SourceLine       int                    `json:"source_line,omitempty"`
 		GitHubLink       string                 `json:"github_link,omitempty"`
+		Cost             *CostAnnotation        `json:"cost,omitempty"`
 	}
 
 	type snapshotExport struct {
@@ -378,6 +381,7 @@ func (t *ExecutionTrace) ExportJSON(schemaVersion string, generatedAt time.Time)
 			SourceFile:        s.SourceFile,
 			SourceLine:        s.SourceLine,
 			GitHubLink:        s.GitHubLink,
+			Cost:              s.Cost,
 		})
 	}
 
@@ -401,6 +405,11 @@ func (t *ExecutionTrace) ExportJSON(schemaVersion string, generatedAt time.Time)
 		gen = time.Now()
 	}
 
+	decodedEvents := t.DecodedEvents
+	if len(decodedEvents) == 0 {
+		decodedEvents = DecodeDiagnosticEventsWithSchemas(t.DiagnosticEvents, nil)
+	}
+
 	exportObj := map[string]interface{}{
 		"schema_version": schemaVersion,
 		"generated_at": gen.UTC().Truncate(time.Second).Format(time.RFC3339),
@@ -411,6 +420,7 @@ func (t *ExecutionTrace) ExportJSON(schemaVersion string, generatedAt time.Time)
 			"states":            states,
 			"snapshots":         snaps,
 			"diagnostic_events": t.DiagnosticEvents,
+			"annotations":       t.Annotations,
 			"subcall_graph":     exportSubcallGraph(t.SubcallGraph()),
 		},
 	}

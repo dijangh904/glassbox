@@ -6,6 +6,7 @@ package trace
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -25,6 +26,10 @@ type ContractEvent struct {
 	TraceStep int `json:"trace_step"`
 	// CallStack captures the function call path at the point of emission.
 	CallStack []string `json:"call_stack,omitempty"`
+	// Name is the schema-defined event name, when a supplied schema matches.
+	Name string `json:"name,omitempty"`
+	// Decoded contains schema-named event fields for audit and trace output.
+	Decoded map[string]interface{} `json:"decoded,omitempty"`
 }
 
 // rawEventEnvelope is used to attempt JSON parsing of an event string.
@@ -33,6 +38,106 @@ type rawEventEnvelope struct {
 	Topics     []string `json:"topics"`
 	Data       interface{} `json:"data"`
 	Type       string   `json:"type"`
+}
+
+// EventFieldSchema describes a single named field in a contract event payload.
+type EventFieldSchema struct {
+	Name    string `json:"name"`
+	Type    string `json:"type,omitempty"`
+	Indexed bool   `json:"indexed,omitempty"`
+}
+
+// EventSchema describes one contract event. JSON schema files may provide this
+// shape directly, or ABI-like entries with "type":"event" and "inputs".
+type EventSchema struct {
+	Name     string             `json:"name"`
+	Topic    string             `json:"topic,omitempty"`
+	Fields   []EventFieldSchema `json:"fields,omitempty"`
+	Inputs   []EventFieldSchema `json:"inputs,omitempty"`
+	Contract string             `json:"contract_id,omitempty"`
+}
+
+// EventSchemaSet holds event definitions keyed by name/topic.
+type EventSchemaSet struct {
+	Events []EventSchema `json:"events"`
+}
+
+type rawABISchema struct {
+	Type   string             `json:"type"`
+	Name   string             `json:"name"`
+	Inputs []EventFieldSchema `json:"inputs"`
+}
+
+// LoadEventSchemas reads JSON event schema definitions from one or more files.
+// Supported inputs:
+//   - {"events":[{"name":"transfer","fields":[...]}]}
+//   - [{"type":"event","name":"transfer","inputs":[...]}]
+//   - [{"name":"transfer","fields":[...]}]
+func LoadEventSchemas(paths ...string) (*EventSchemaSet, error) {
+	set := &EventSchemaSet{}
+	for _, path := range paths {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read event schema %s: %w", path, err)
+		}
+		parsed, err := ParseEventSchemas(data)
+		if err != nil {
+			return nil, fmt.Errorf("parse event schema %s: %w", path, err)
+		}
+		set.Events = append(set.Events, parsed.Events...)
+	}
+	return set, nil
+}
+
+// ParseEventSchemas parses JSON or ABI-like event definitions.
+func ParseEventSchemas(data []byte) (*EventSchemaSet, error) {
+	var wrapped EventSchemaSet
+	if err := json.Unmarshal(data, &wrapped); err == nil && len(wrapped.Events) > 0 {
+		normalizeSchemas(wrapped.Events)
+		return &wrapped, nil
+	}
+
+	var abiEntries []rawABISchema
+	if err := json.Unmarshal(data, &abiEntries); err == nil {
+		set := &EventSchemaSet{}
+		for _, entry := range abiEntries {
+			if entry.Type != "" && entry.Type != "event" {
+				continue
+			}
+			if entry.Name == "" {
+				continue
+			}
+			set.Events = append(set.Events, EventSchema{
+				Name:   entry.Name,
+				Topic:  entry.Name,
+				Fields: entry.Inputs,
+			})
+		}
+		if len(set.Events) > 0 {
+			return set, nil
+		}
+	}
+
+	var direct []EventSchema
+	if err := json.Unmarshal(data, &direct); err != nil {
+		return nil, err
+	}
+	normalizeSchemas(direct)
+	return &EventSchemaSet{Events: direct}, nil
+}
+
+func normalizeSchemas(events []EventSchema) {
+	for i := range events {
+		if len(events[i].Fields) == 0 && len(events[i].Inputs) > 0 {
+			events[i].Fields = events[i].Inputs
+		}
+		if events[i].Topic == "" {
+			events[i].Topic = events[i].Name
+		}
+	}
 }
 
 // DecodeContractEvent parses a single raw event string (JSON or structured
@@ -84,11 +189,134 @@ func DecodeContractEvent(raw string) *ContractEvent {
 	return ev
 }
 
+// DecodeContractEventWithSchemas decodes an event and applies the first
+// matching schema. A schema matches on contract_id when present and on either
+// event name/topic in the event topics.
+func DecodeContractEventWithSchemas(raw string, schemas *EventSchemaSet) *ContractEvent {
+	ev := DecodeContractEvent(raw)
+	ApplyEventSchemas(ev, schemas)
+	return ev
+}
+
 // DecodeContractEvents decodes all raw event strings in the slice.
 func DecodeContractEvents(raws []string) []*ContractEvent {
 	out := make([]*ContractEvent, 0, len(raws))
 	for _, r := range raws {
 		out = append(out, DecodeContractEvent(r))
+	}
+	return out
+}
+
+// DecodeContractEventsWithSchemas decodes all raw events and applies schemas.
+func DecodeContractEventsWithSchemas(raws []string, schemas *EventSchemaSet) []*ContractEvent {
+	out := make([]*ContractEvent, 0, len(raws))
+	for _, r := range raws {
+		out = append(out, DecodeContractEventWithSchemas(r, schemas))
+	}
+	return out
+}
+
+// DecodeDiagnosticEventsWithSchemas converts structured diagnostic events to
+// decoded contract events and applies schemas.
+func DecodeDiagnosticEventsWithSchemas(events []DiagnosticEvent, schemas *EventSchemaSet) []*ContractEvent {
+	out := make([]*ContractEvent, 0, len(events))
+	for _, de := range events {
+		ev := &ContractEvent{
+			Topics:    de.Topics,
+			Data:      de.Data,
+			Type:      de.EventType,
+			TraceStep: -1,
+		}
+		if de.ContractID != nil {
+			ev.ContractID = *de.ContractID
+		}
+		ApplyEventSchemas(ev, schemas)
+		out = append(out, ev)
+	}
+	return out
+}
+
+// ApplyEventSchemas enriches a decoded event in place.
+func ApplyEventSchemas(ev *ContractEvent, schemas *EventSchemaSet) {
+	if ev == nil || schemas == nil {
+		return
+	}
+	schema := schemas.match(ev)
+	if schema == nil {
+		return
+	}
+	ev.Name = schema.Name
+	fields := schema.Fields
+	if len(fields) == 0 {
+		fields = schema.Inputs
+	}
+	if len(fields) == 0 {
+		return
+	}
+	values := eventDataValues(ev.Data)
+	decoded := make(map[string]interface{}, len(fields))
+	for i, field := range fields {
+		if field.Name == "" {
+			continue
+		}
+		if i < len(values) {
+			decoded[field.Name] = values[i]
+		}
+	}
+	if len(decoded) > 0 {
+		ev.Decoded = decoded
+	}
+}
+
+func (s *EventSchemaSet) match(ev *ContractEvent) *EventSchema {
+	if s == nil || ev == nil {
+		return nil
+	}
+	for i := range s.Events {
+		schema := &s.Events[i]
+		if schema.Contract != "" && schema.Contract != ev.ContractID {
+			continue
+		}
+		topic := schema.Topic
+		if topic == "" {
+			topic = schema.Name
+		}
+		for _, evTopic := range ev.Topics {
+			if strings.EqualFold(evTopic, topic) || strings.EqualFold(evTopic, schema.Name) {
+				return schema
+			}
+		}
+	}
+	return nil
+}
+
+func eventDataValues(data string) []interface{} {
+	data = strings.TrimSpace(data)
+	if data == "" {
+		return nil
+	}
+
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &obj); err == nil {
+		if vals, ok := obj["values"].([]interface{}); ok {
+			return vals
+		}
+		out := make([]interface{}, 0, len(obj))
+		for _, v := range obj {
+			out = append(out, v)
+		}
+		return out
+	}
+
+	var arr []interface{}
+	if err := json.Unmarshal([]byte(data), &arr); err == nil {
+		return arr
+	}
+
+	parts := strings.Split(data, ",")
+	out := make([]interface{}, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, strings.TrimSpace(part))
 	}
 	return out
 }
@@ -208,6 +436,10 @@ func attachRecursive(node *TraceNode, byContract map[string][]*ContractEvent) {
 }
 
 func formatEventSummary(ev *ContractEvent) string {
+	if ev.Name != "" && len(ev.Decoded) > 0 {
+		b, _ := json.Marshal(ev.Decoded)
+		return fmt.Sprintf("[%s] %s %s", ev.Type, ev.Name, string(b))
+	}
 	if len(ev.Topics) > 0 {
 		return fmt.Sprintf("[%s] topics=%s data=%s", ev.Type, strings.Join(ev.Topics, ","), ev.Data)
 	}

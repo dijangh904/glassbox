@@ -26,6 +26,7 @@ fn test_signature_verification_mock_true() {
         memory_limit: None,
         restore_preamble: None,
         include_linear_memory: false,
+        skip_source_mapping: false,
     };
 
     assert!(request.mock_signature_verification.is_some());
@@ -53,6 +54,7 @@ fn test_signature_verification_mock_false() {
         memory_limit: None,
         restore_preamble: None,
         include_linear_memory: false,
+        skip_source_mapping: false,
     };
 
     assert!(request.mock_signature_verification.is_some());
@@ -80,6 +82,7 @@ fn test_signature_verification_mock_disabled() {
         memory_limit: None,
         restore_preamble: None,
         include_linear_memory: false,
+        skip_source_mapping: false,
     };
 
     assert!(request.mock_signature_verification.is_none());

@@ -1,0 +1,169 @@
+// Copyright 2026 Glassbox Users
+// SPDX-License-Identifier: Apache-2.0
+
+package plugin
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func makeManifest(name string, caps []Capability, perms []Permission, trust TrustLevel) *Manifest {
+	return &Manifest{
+		SchemaVersion: ManifestVersion,
+		Name:          name,
+		Version:       "1.0.0",
+		APIVersion:    Version,
+		Entrypoint:    "plugin",
+		Capabilities:  caps,
+		Permissions:   perms,
+		TrustLevel:    trust,
+	}
+}
+
+func TestDefaultPolicy_AllowsEverything(t *testing.T) {
+	pol := DefaultPolicy()
+	m := makeManifest("my-plugin", []Capability{CapabilityDecoder}, []Permission{PermissionNetwork}, TrustLevelUntrusted)
+	if err := pol.CheckManifest(m); err != nil {
+		t.Errorf("default policy should allow everything, got: %v", err)
+	}
+}
+
+func TestPolicy_DeniedCapability(t *testing.T) {
+	pol := &Policy{
+		DeniedCapabilities: []string{"write_fs"},
+		AllowUntrusted:     true,
+	}
+	m := makeManifest("bad-plugin", []Capability{CapabilityArtifactLoader, "write_fs"}, nil, TrustLevelCommunity)
+	if err := pol.CheckManifest(m); err == nil {
+		t.Error("expected policy to deny plugin with write_fs capability")
+	}
+}
+
+func TestPolicy_DeniedPermission(t *testing.T) {
+	pol := &Policy{
+		DeniedPermissions: []string{"network"},
+		AllowUntrusted:    true,
+	}
+	m := makeManifest("net-plugin", []Capability{CapabilityDecoder}, []Permission{PermissionNetwork}, TrustLevelVerified)
+	if err := pol.CheckManifest(m); err == nil {
+		t.Error("expected policy to deny plugin requesting network permission")
+	}
+}
+
+func TestPolicy_DeniedPluginName(t *testing.T) {
+	pol := &Policy{
+		DeniedPlugins:  []string{"evil-plugin"},
+		AllowUntrusted: true,
+	}
+	m := makeManifest("evil-plugin", []Capability{CapabilityDecoder}, nil, TrustLevelVerified)
+	if err := pol.CheckManifest(m); err == nil {
+		t.Error("expected policy to deny explicitly blocked plugin name")
+	}
+}
+
+func TestPolicy_AllowedPlugin(t *testing.T) {
+	pol := &Policy{
+		DeniedCapabilities: []string{"write_fs"},
+		DeniedPermissions:  []string{"network"},
+		DeniedPlugins:      []string{"evil-plugin"},
+		AllowUntrusted:     true,
+	}
+	m := makeManifest("good-plugin", []Capability{CapabilityDecoder}, []Permission{PermissionReadFS}, TrustLevelVerified)
+	if err := pol.CheckManifest(m); err != nil {
+		t.Errorf("expected policy to allow good plugin, got: %v", err)
+	}
+}
+
+func TestPolicy_DenyUntrusted(t *testing.T) {
+	pol := &Policy{AllowUntrusted: false}
+	m := makeManifest("untrusted-plugin", []Capability{CapabilityDecoder}, nil, TrustLevelUntrusted)
+	if err := pol.CheckManifest(m); err == nil {
+		t.Error("expected policy to deny untrusted plugin when AllowUntrusted=false")
+	}
+}
+
+func TestPolicy_DenyEmptyTrustLevel(t *testing.T) {
+	pol := &Policy{AllowUntrusted: false}
+	m := makeManifest("no-trust-plugin", []Capability{CapabilityDecoder}, nil, "")
+	if err := pol.CheckManifest(m); err == nil {
+		t.Error("expected policy to deny plugin with empty trust level when AllowUntrusted=false")
+	}
+}
+
+func TestPolicy_AllowVerifiedWhenUntrustedDenied(t *testing.T) {
+	pol := &Policy{AllowUntrusted: false}
+	m := makeManifest("verified-plugin", []Capability{CapabilityDecoder}, nil, TrustLevelVerified)
+	if err := pol.CheckManifest(m); err != nil {
+		t.Errorf("verified plugin should be allowed even when AllowUntrusted=false, got: %v", err)
+	}
+}
+
+func TestPolicy_NilPolicyAllowsAll(t *testing.T) {
+	var pol *Policy
+	m := makeManifest("any-plugin", []Capability{CapabilityDecoder}, []Permission{PermissionNetwork}, TrustLevelUntrusted)
+	if err := pol.CheckManifest(m); err != nil {
+		t.Errorf("nil policy should allow everything, got: %v", err)
+	}
+}
+
+func TestLoadPolicy_ValidFile(t *testing.T) {
+	pol := &Policy{
+		DeniedCapabilities: []string{"write_fs"},
+		DeniedPermissions:  []string{"network"},
+		DeniedPlugins:      []string{"bad-plugin"},
+		AllowUntrusted:     false,
+	}
+	data, _ := json.Marshal(pol)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "policy.json")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadPolicy(path)
+	if err != nil {
+		t.Fatalf("LoadPolicy failed: %v", err)
+	}
+	if len(loaded.DeniedCapabilities) != 1 || loaded.DeniedCapabilities[0] != "write_fs" {
+		t.Errorf("DeniedCapabilities mismatch: %v", loaded.DeniedCapabilities)
+	}
+	if loaded.AllowUntrusted {
+		t.Error("AllowUntrusted should be false")
+	}
+}
+
+func TestLoadPolicy_MissingFile(t *testing.T) {
+	_, err := LoadPolicy("/nonexistent/policy.json")
+	if err == nil {
+		t.Error("expected error for missing policy file")
+	}
+}
+
+func TestLoadPolicy_InvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "policy.json")
+	if err := os.WriteFile(path, []byte("not-json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadPolicy(path)
+	if err == nil {
+		t.Error("expected error for invalid JSON policy file")
+	}
+}
+
+func TestRegistry_PolicyEnforced(t *testing.T) {
+	reg := NewRegistry()
+	pol := &Policy{
+		DeniedCapabilities: []string{"decoder"},
+		AllowUntrusted:     true,
+	}
+	reg.SetPolicy(pol)
+
+	if reg.Policy() != pol {
+		t.Error("Policy() should return the set policy")
+	}
+}

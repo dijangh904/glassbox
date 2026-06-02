@@ -54,6 +54,9 @@ pub struct SimulationRequest {
     pub restore_preamble: Option<serde_json::Value>,
     #[serde(default)]
     pub include_linear_memory: bool,
+    /// When true, skip DWARF source mapping and Git link generation for faster replay.
+    #[serde(default)]
+    pub skip_source_mapping: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

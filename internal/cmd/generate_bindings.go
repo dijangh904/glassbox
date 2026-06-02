@@ -11,6 +11,7 @@ import (
 
 	"github.com/dotandev/glassbox/internal/abi"
 	"github.com/dotandev/glassbox/internal/bindings"
+	"github.com/dotandev/glassbox/internal/clioutput"
 	"github.com/spf13/cobra"
 )
 
@@ -25,7 +26,18 @@ var (
 	bindingsSpecFile        string
 	bindingsSpecFormat      string
 	bindingsNoEmbedMetadata bool
+	bindingsJSONFlag        bool
+	bindingsFormatFlag      string
 )
+
+// generateBindingsOutput is the structured result for --json / --format json.
+type generateBindingsOutput struct {
+	Package  string   `json:"package"`
+	Output   string   `json:"output"`
+	Runtime  string   `json:"runtime"`
+	Files    []string `json:"files"`
+	DebugMeta bool    `json:"debug_metadata"`
+}
 
 var generateBindingsCmd = &cobra.Command{
 	Use:   "generate-bindings [wasm-file]",
@@ -138,6 +150,7 @@ func runGenerateBindings(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to generate bindings: %w", err)
 	}
 
+	written := make([]string, 0, len(files))
 	for _, file := range files {
 		fullPath := filepath.Join(bindingsOutput, file.Path)
 
@@ -149,8 +162,21 @@ func runGenerateBindings(_ *cobra.Command, args []string) error {
 		if err := os.WriteFile(fullPath, []byte(file.Content), 0644); err != nil {
 			return fmt.Errorf("failed to write file %s: %w", fullPath, err)
 		}
+		written = append(written, fullPath)
 
-		fmt.Printf("Generated: %s\n", fullPath)
+		if !clioutput.WantsJSON(bindingsJSONFlag, bindingsFormatFlag) {
+			fmt.Printf("Generated: %s\n", fullPath)
+		}
+	}
+
+	if clioutput.WantsJSON(bindingsJSONFlag, bindingsFormatFlag) {
+		return clioutput.WriteStdout("generate-bindings", generateBindingsOutput{
+			Package:   bindingsPackage,
+			Output:    bindingsOutput,
+			Runtime:   bindingsRuntime,
+			Files:     written,
+			DebugMeta: bindingsDebugMeta,
+		})
 	}
 
 	fmt.Printf("\n[OK] TypeScript bindings generated successfully\n")
@@ -190,6 +216,10 @@ func init() {
 		"Format of --spec-file: json or xdr (auto-detected when omitted)")
 	generateBindingsCmd.Flags().BoolVar(&bindingsNoEmbedMetadata, "no-embed-metadata", false,
 		"Disable embedding @glassbox-bindings-meta headers in generated files (disables staleness detection)")
+	generateBindingsCmd.Flags().BoolVar(&bindingsJSONFlag, "json", false,
+		"Output generation summary as machine-readable JSON")
+	generateBindingsCmd.Flags().StringVar(&bindingsFormatFlag, "format", "text",
+		"Output format: text or json")
 
 	rootCmd.AddCommand(generateBindingsCmd)
 }

@@ -24,7 +24,7 @@ var themeNames = []string{
 }
 var xdrFormats = []string{"json\tJSON output", "table\tTabular output"}
 var xdrTypes = []string{"ledger-entry\tLedger entry XDR", "diagnostic-event\tDiagnostic event XDR"}
-var reportFormats = []string{"html\tHTML report", "pdf\tPDF report", "json\tJSON report", "html,pdf\tBoth HTML and PDF"}
+var reportFormats = []string{"text\tText diagnostic summary", "json\tJSON diagnostic summary", "html\tHTML report", "pdf\tPDF report", "html,pdf\tBoth HTML and PDF"}
 
 func completeNetworkFlag(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 	completions := append([]string{}, networkAliases...)
