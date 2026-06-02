@@ -28,6 +28,10 @@ const (
 	// FailureContractTrap indicates a fatal WASM trap (unreachable, out-of-bounds, stack overflow, explicit panic).
 	FailureContractTrap FailureCategory = "CONTRACT_TRAP"
 
+	// FailureStorageOverflow indicates the contract exceeded Soroban storage limits,
+	// including per-transaction entry count, single-entry size, or footprint size.
+	FailureStorageOverflow FailureCategory = "STORAGE_OVERFLOW"
+
 	// FailureValidation indicates a ledger-level or protocol-level validation error
 	// (e.g. malformed XDR, bad sequence number, Soroban-invalid transaction).
 	FailureValidation FailureCategory = "VALIDATION_ERROR"
@@ -62,6 +66,9 @@ type FailureDiagnostic struct {
 
 	// ValidationDetails is populated for VALIDATION_ERROR failures.
 	ValidationDetails *ValidationDiagnosticDetails `json:"validation_details,omitempty"`
+
+	// StorageDetails is populated for STORAGE_OVERFLOW failures.
+	StorageDetails *StorageDiagnosticDetails `json:"storage_details,omitempty"`
 }
 
 // BudgetDiagnosticDetails carries CPU and memory budget metrics for budget failures.
@@ -117,6 +124,15 @@ type ValidationDiagnosticDetails struct {
 	Field string `json:"field,omitempty"`
 	// Reason is a short description of why validation failed.
 	Reason string `json:"reason,omitempty"`
+}
+
+// StorageDiagnosticDetails carries context for STORAGE_OVERFLOW failures.
+type StorageDiagnosticDetails struct {
+	// OverflowKind categorises the specific storage limit that was exceeded.
+	// Known values: "entry_count", "entry_size", "footprint".
+	OverflowKind string `json:"overflow_kind,omitempty"`
+	// Suggestion is a brief remediation hint.
+	Suggestion string `json:"suggestion,omitempty"`
 }
 
 // String returns a human-readable one-line representation of the diagnostic.
@@ -177,12 +193,17 @@ func ClassifyFailure(resp *SimulationResponse) *FailureDiagnostic {
 		return buildTrapDiagnostic(errCode, errMsg, resp.StackTrace)
 	}
 
-	// 5. Validation error
+	// 5. Storage overflow
+	if isStorageOverflow(errCode, errMsg) {
+		return buildStorageOverflowDiagnostic(errCode, errMsg)
+	}
+
+	// 6. Validation error
 	if isValidationError(errCode, errMsg) {
 		return buildValidationDiagnostic(errCode, errMsg)
 	}
 
-	// 6. Unknown
+	// 7. Unknown
 	return &FailureDiagnostic{
 		Category:     FailureUnknown,
 		Summary:      summarizeUnknown(errMsg),
@@ -266,6 +287,64 @@ func isContractTrap(errCode, errMsg string, stackTrace *WasmStackTrace) bool {
 		strings.Contains(lc, "integer divide by zero") ||
 		strings.Contains(lc, "panic:") ||
 		strings.Contains(lc, "contract_invocation_failed")
+}
+
+func isStorageOverflow(errCode, errMsg string) bool {
+	if errCode == "STORAGE_OVERFLOW" || errCode == "STORAGE_FULL" ||
+		errCode == "SOROBAN_STORAGE_FULL" || errCode == "LEDGER_ENTRY_COUNT_LIMIT_EXCEEDED" {
+		return true
+	}
+	lc := strings.ToLower(errMsg)
+	return strings.Contains(lc, "storagefull") ||
+		strings.Contains(lc, "storage full") ||
+		strings.Contains(lc, "storage limit exceeded") ||
+		strings.Contains(lc, "error(storage, full") ||
+		strings.Contains(lc, "max_ledger_entries_exceeded") ||
+		strings.Contains(lc, "ledger entry count limit") ||
+		strings.Contains(lc, "entry size exceeded") ||
+		strings.Contains(lc, "ledger entry too large") ||
+		strings.Contains(lc, "value_size_limit_exceeded") ||
+		(strings.Contains(lc, "footprint") && strings.Contains(lc, "exceed")) ||
+		(strings.Contains(lc, "too many") && strings.Contains(lc, "ledger"))
+}
+
+func buildStorageOverflowDiagnostic(errCode, errMsg string) *FailureDiagnostic {
+	kind, suggestion := classifyStorageOverflow(errMsg)
+	return &FailureDiagnostic{
+		Category:     FailureStorageOverflow,
+		Summary:      buildStorageSummary(kind),
+		ErrorCode:    errCode,
+		ErrorMessage: errMsg,
+		StorageDetails: &StorageDiagnosticDetails{
+			OverflowKind: kind,
+			Suggestion:   suggestion,
+		},
+	}
+}
+
+func classifyStorageOverflow(errMsg string) (kind, suggestion string) {
+	lc := strings.ToLower(errMsg)
+	switch {
+	case strings.Contains(lc, "entry size exceeded") ||
+		strings.Contains(lc, "ledger entry too large") ||
+		strings.Contains(lc, "value_size_limit_exceeded"):
+		return "entry_size", "reduce the amount of data stored in a single ledger entry or split it across multiple keys"
+	case strings.Contains(lc, "footprint") && strings.Contains(lc, "exceed"):
+		return "footprint", "reduce the number of ledger keys accessed in a single transaction or batch the operation"
+	default:
+		return "entry_count", "archive unused ledger entries, reduce keys written per transaction, or split the operation into smaller batches"
+	}
+}
+
+func buildStorageSummary(kind string) string {
+	switch kind {
+	case "entry_size":
+		return "Contract execution failed because a ledger entry value exceeded the maximum allowed size."
+	case "footprint":
+		return "Contract execution failed because the transaction footprint (keys read/written) exceeded the per-transaction limit."
+	default:
+		return "Contract execution failed because the Soroban storage entry limit was exceeded."
+	}
 }
 
 func isValidationError(errCode, errMsg string) bool {

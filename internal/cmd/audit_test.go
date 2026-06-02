@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/dotandev/glassbox/internal/signer"
+	"github.com/dotandev/glassbox/internal/trace"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -86,6 +87,40 @@ func TestGenerate_WithAttestation(t *testing.T) {
 	assert.True(t, log.HardwareAttestation.KeyNonExportable)
 
 	// Verify
+	valid, err := VerifyAuditLog(log)
+	require.NoError(t, err)
+	assert.True(t, valid)
+}
+
+func TestGenerate_WithEventSchemas(t *testing.T) {
+	privHex, _ := generateTestKeyPair()
+	schemas := &trace.EventSchemaSet{Events: []trace.EventSchema{
+		{
+			Name:  "transfer",
+			Topic: "transfer",
+			Fields: []trace.EventFieldSchema{
+				{Name: "from"},
+				{Name: "to"},
+				{Name: "amount"},
+			},
+		},
+	}}
+
+	log, err := Generate(
+		"tx_events",
+		"env",
+		"meta",
+		[]string{`{"contract_id":"CA","topics":["transfer"],"data":["alice","bob","100"]}`},
+		nil,
+		privHex,
+		&GenerateOptions{EventSchemas: schemas},
+	)
+
+	require.NoError(t, err)
+	require.Len(t, log.Payload.DecodedEvents, 1)
+	assert.Equal(t, "transfer", log.Payload.DecodedEvents[0].Name)
+	assert.Equal(t, "alice", log.Payload.DecodedEvents[0].Decoded["from"])
+
 	valid, err := VerifyAuditLog(log)
 	require.NoError(t, err)
 	assert.True(t, valid)

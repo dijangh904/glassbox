@@ -17,6 +17,7 @@ import (
 var (
 	pluginDirFlag      string
 	pluginManifestFlag string
+	pluginPolicyFlag   string
 )
 
 // pluginCmd is the parent command for plugin management.
@@ -96,23 +97,59 @@ Exit 1 is returned when no plugins are found.`,
 	RunE: runPluginCapabilities,
 }
 
+// pluginPolicyCmd validates a policy file and shows what it would deny.
+var pluginPolicyCmd = &cobra.Command{
+	Use:   "policy",
+	Short: "Validate and inspect a plugin sandbox policy file",
+	Long: `Parse and display a plugin sandbox policy file.
+
+The policy file is a JSON document that controls which plugin capabilities,
+permissions, and names are denied at load time.
+
+Example policy file (policy.json):
+  {
+    "denied_capabilities": ["write_fs"],
+    "denied_permissions":  ["network"],
+    "denied_plugins":      ["untrusted-plugin"],
+    "allow_untrusted":     false
+  }
+
+Use --policy with 'plugin list' or 'plugin register' to enforce the policy.`,
+	RunE: runPluginPolicy,
+}
+
 func init() {
 	pluginListCmd.Flags().StringVar(&pluginDirFlag, "dir", "", "Plugin directory to scan (default: ./plugins)")
+	pluginListCmd.Flags().StringVar(&pluginPolicyFlag, "policy", "", "Path to a JSON sandbox policy file to enforce")
 	pluginRegisterCmd.Flags().StringVar(&pluginManifestFlag, "manifest", "", "Path to the plugin.json manifest file")
+	pluginRegisterCmd.Flags().StringVar(&pluginPolicyFlag, "policy", "", "Path to a JSON sandbox policy file to enforce")
 	pluginInspectCmd.Flags().StringVar(&pluginDirFlag, "dir", "", "Plugin directory to scan (default: ./plugins)")
 	pluginValidateCmd.Flags().StringVar(&pluginManifestFlag, "manifest", "", "Path to the plugin.json manifest file to validate")
+	pluginValidateCmd.Flags().StringVar(&pluginPolicyFlag, "policy", "", "Path to a JSON sandbox policy file to check against")
 	pluginCapabilitiesCmd.Flags().StringVar(&pluginDirFlag, "dir", "", "Plugin directory to scan (default: ./plugins)")
+	pluginPolicyCmd.Flags().StringVar(&pluginPolicyFlag, "policy", "", "Path to the JSON policy file to inspect (required)")
 
 	pluginCmd.AddCommand(pluginListCmd)
 	pluginCmd.AddCommand(pluginRegisterCmd)
 	pluginCmd.AddCommand(pluginInspectCmd)
 	pluginCmd.AddCommand(pluginValidateCmd)
 	pluginCmd.AddCommand(pluginCapabilitiesCmd)
+	pluginCmd.AddCommand(pluginPolicyCmd)
 	rootCmd.AddCommand(pluginCmd)
 }
 
 func runPluginList(cmd *cobra.Command, args []string) error {
 	dir := resolvePluginDir(pluginDirFlag)
+
+	// Load policy if provided.
+	var pol *plugin.Policy
+	if pluginPolicyFlag != "" {
+		var err error
+		pol, err = plugin.LoadPolicy(pluginPolicyFlag)
+		if err != nil {
+			return errors.WrapValidationError(fmt.Sprintf("failed to load policy: %v", err))
+		}
+	}
 
 	manifests, errs := plugin.DiscoverManifests(dir)
 
@@ -128,8 +165,8 @@ func runPluginList(cmd *cobra.Command, args []string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tVERSION\tAPI\tCAPABILITIES\tDESCRIPTION")
-	fmt.Fprintln(w, "----\t-------\t---\t------------\t-----------")
+	fmt.Fprintln(w, "NAME\tVERSION\tAPI\tCAPABILITIES\tSTATUS\tDESCRIPTION")
+	fmt.Fprintln(w, "----\t-------\t---\t------------\t------\t-----------")
 
 	for _, m := range manifests {
 		caps := capabilitiesString(m.Capabilities)
@@ -137,8 +174,14 @@ func runPluginList(cmd *cobra.Command, args []string) error {
 		if desc == "" {
 			desc = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			m.Name, m.Version, m.APIVersion, caps, desc)
+		status := "allowed"
+		if pol != nil {
+			if err := pol.CheckManifest(m); err != nil {
+				status = "DENIED"
+			}
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			m.Name, m.Version, m.APIVersion, caps, status, desc)
 	}
 	_ = w.Flush()
 
@@ -257,6 +300,63 @@ func runPluginValidate(cmd *cobra.Command, args []string) error {
 	if m.TrustLevel != "" {
 		fmt.Printf("  Trust level: %s\n", m.TrustLevel)
 	}
+
+	// Check against policy if provided.
+	if pluginPolicyFlag != "" {
+		pol, err := plugin.LoadPolicy(pluginPolicyFlag)
+		if err != nil {
+			return errors.WrapValidationError(fmt.Sprintf("failed to load policy: %v", err))
+		}
+		if err := pol.CheckManifest(m); err != nil {
+			fmt.Fprintf(os.Stderr, "POLICY DENIED: %v\n", err)
+			return errors.WrapValidationError(fmt.Sprintf("policy check failed: %v", err))
+		}
+		fmt.Println("  Policy check: ALLOWED")
+	}
+
+	return nil
+}
+
+func runPluginPolicy(cmd *cobra.Command, args []string) error {
+	if pluginPolicyFlag == "" {
+		return errors.WrapCliArgumentRequired("policy")
+	}
+
+	pol, err := plugin.LoadPolicy(pluginPolicyFlag)
+	if err != nil {
+		return errors.WrapValidationError(fmt.Sprintf("failed to load policy: %v", err))
+	}
+
+	fmt.Printf("Policy file: %s\n", pluginPolicyFlag)
+	fmt.Printf("  Allow untrusted plugins: %v\n", pol.AllowUntrusted)
+
+	if len(pol.DeniedCapabilities) > 0 {
+		fmt.Println("  Denied capabilities:")
+		for _, c := range pol.DeniedCapabilities {
+			fmt.Printf("    - %s\n", c)
+		}
+	} else {
+		fmt.Println("  Denied capabilities: (none)")
+	}
+
+	if len(pol.DeniedPermissions) > 0 {
+		fmt.Println("  Denied permissions:")
+		for _, p := range pol.DeniedPermissions {
+			fmt.Printf("    - %s\n", p)
+		}
+	} else {
+		fmt.Println("  Denied permissions: (none)")
+	}
+
+	if len(pol.DeniedPlugins) > 0 {
+		fmt.Println("  Denied plugins:")
+		for _, n := range pol.DeniedPlugins {
+			fmt.Printf("    - %s\n", n)
+		}
+	} else {
+		fmt.Println("  Denied plugins: (none)")
+	}
+
 	return nil
 }
 

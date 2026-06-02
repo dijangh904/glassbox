@@ -45,6 +45,10 @@ var (
 	AuditLogPKCS11KeyLabel string
 	AuditLogPKCS11KeyIDHex string
 	AuditLogMetadata []string
+
+	// ConfigPassphraseFlag is the passphrase used to decrypt an encrypted config file.
+	// It can also be supplied via GLASSBOX_CONFIG_PASSPHRASE.
+	ConfigPassphraseFlag string
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -208,6 +212,10 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&AuditLogPKCS11KeyLabel, "audit-log-pkcs11-key-label", "", "PKCS#11 key label for CLI operation auditing")
 	rootCmd.PersistentFlags().StringVar(&AuditLogPKCS11KeyIDHex, "audit-log-pkcs11-key-id", "", "PKCS#11 key ID hex for CLI operation auditing")
 	rootCmd.PersistentFlags().StringArrayVar(&AuditLogMetadata, "audit-log-meta", nil, "Additional metadata entries for CLI operation audit logs in key=value form")
+
+	rootCmd.PersistentFlags().StringVar(&ConfigPassphraseFlag, "config-passphrase", "",
+		"Passphrase to decrypt an encrypted config file (or set GLASSBOX_CONFIG_PASSPHRASE)")
+	_ = rootCmd.PersistentFlags().MarkHidden("config-passphrase") // sensitive; hidden from default help
 }
 
 func checkForUpdatesAsync() {

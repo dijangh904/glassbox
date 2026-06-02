@@ -61,6 +61,56 @@ func TestDecodeContractEvents(t *testing.T) {
 	}
 }
 
+func TestDecodeContractEventWithSchemas_JSONSchema(t *testing.T) {
+	schemas, err := ParseEventSchemas([]byte(`{
+		"events": [{
+			"name": "transfer",
+			"fields": [
+				{"name": "from", "type": "address"},
+				{"name": "to", "type": "address"},
+				{"name": "amount", "type": "i128"}
+			]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("ParseEventSchemas returned error: %v", err)
+	}
+
+	ev := DecodeContractEventWithSchemas(
+		`{"contract_id":"CA","topics":["transfer"],"data":["alice","bob","100"]}`,
+		schemas,
+	)
+
+	if ev.Name != "transfer" {
+		t.Fatalf("Name = %q, want transfer", ev.Name)
+	}
+	if ev.Decoded["from"] != "alice" || ev.Decoded["to"] != "bob" || ev.Decoded["amount"] != "100" {
+		t.Fatalf("Decoded = %#v, want named transfer fields", ev.Decoded)
+	}
+}
+
+func TestParseEventSchemas_ABIStyle(t *testing.T) {
+	schemas, err := ParseEventSchemas([]byte(`[
+		{"type":"function","name":"transfer"},
+		{"type":"event","name":"mint","inputs":[{"name":"admin"},{"name":"amount"}]}
+	]`))
+	if err != nil {
+		t.Fatalf("ParseEventSchemas returned error: %v", err)
+	}
+
+	ev := DecodeContractEventWithSchemas(
+		`{"contract_id":"CA","topics":["mint"],"data":["root","50"]}`,
+		schemas,
+	)
+
+	if ev.Name != "mint" {
+		t.Fatalf("Name = %q, want mint", ev.Name)
+	}
+	if ev.Decoded["admin"] != "root" || ev.Decoded["amount"] != "50" {
+		t.Fatalf("Decoded = %#v, want ABI input names", ev.Decoded)
+	}
+}
+
 func TestCorrelateEvents(t *testing.T) {
 	tr := &ExecutionTrace{
 		TransactionHash: "abc",

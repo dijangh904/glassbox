@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dotandev/glassbox/internal/abi"
 	"github.com/dotandev/glassbox/internal/config"
 	"github.com/dotandev/glassbox/internal/decenstorage"
 	"github.com/dotandev/glassbox/internal/decoder"
@@ -191,8 +192,9 @@ func (d *DebugCommand) runDebug(cmd *cobra.Command, cmdArgs []string) error {
 }
 
 var debugCmd = &cobra.Command{
-	Use:   "debug <transaction-hash>",
-	Short: "Debug a failed Soroban transaction",
+	Use:     "debug <transaction-hash>",
+	Aliases: []string{"db"},
+	Short:   "Debug a failed Soroban transaction",
 	Long: `Fetch and simulate a Soroban transaction to debug failures and analyze execution.
 
 This command retrieves the transaction envelope from the Stellar network, runs it
@@ -797,40 +799,15 @@ Local WASM Replay Mode:
 		fmt.Printf("\n=== Security Analysis ===\n")
 		secDetector := security.NewDetector()
 		findings := secDetector.Analyze(resp.EnvelopeXdr, resp.ResultMetaXdr, lastSimResp.Events, lastSimResp.Logs)
-		if len(findings) == 0 {
-			fmt.Printf("%s No security issues detected\n", visualizer.Success())
-		} else {
-			verifiedCount := 0
-			heuristicCount := 0
-
-			for _, finding := range findings {
-				if finding.Type == security.FindingVerifiedRisk {
-					verifiedCount++
-				} else {
-					heuristicCount++
-				}
-			}
-
-			if verifiedCount > 0 {
-				fmt.Printf("\n[!]  VERIFIED SECURITY RISKS: %d\n", verifiedCount)
-			}
-			if heuristicCount > 0 {
-				fmt.Printf("* HEURISTIC WARNINGS: %d\n", heuristicCount)
-			}
-
-			fmt.Printf("\nFindings:\n")
-			for i, finding := range findings {
-				icon := "*"
-				if finding.Type == security.FindingVerifiedRisk {
-					icon = "[!]"
-				}
-				fmt.Printf("%d. %s [%s] %s - %s\n", i+1, icon, finding.Type, finding.Severity, finding.Title)
-				fmt.Printf("   %s\n", finding.Description)
-				if finding.Evidence != "" {
-					fmt.Printf("   Evidence: %s\n", finding.Evidence)
-				}
+		if contractSourceFlag != "" {
+			sourceFindings, scanErr := secDetector.ScanSourcePath(contractSourceFlag, nil)
+			if scanErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: source vulnerability scan failed: %v\n", scanErr)
+			} else {
+				findings = append(findings, sourceFindings...)
 			}
 		}
+		printSecurityFindings(findings)
 
 		// Analysis: Token Flows
 		hasTokenFlows := false
@@ -980,6 +957,13 @@ func runLocalWasmReplay() error {
 	fmt.Printf("WASM File: %s\n", wasmPath)
 	fmt.Printf("Arguments: %v\n", args)
 	fmt.Println()
+
+	// Analyze WASM binary size and emit warnings for large contracts.
+	if sizeAnalysis, sizeErr := abi.AnalyzeWasmSize(wasmBytes); sizeErr == nil {
+		if msg := abi.FormatWasmSizeWarnings(sizeAnalysis); msg != "" {
+			fmt.Fprintf(os.Stderr, "%s\n", msg)
+		}
+	}
 
 	// Check for LTO in the project that produced the WASM
 	checkLTOWarning(wasmPath)
@@ -1434,6 +1418,14 @@ func printSimulationResult(network string, res *simulator.SimulationResponse) {
 		)
 
 		fmt.Printf("    Operations:       %d\n", res.BudgetUsage.OperationsCount)
+
+		// Add fee estimate
+		gasEst, err := simulator.ExtractGasEstimation(&simulator.SimulationResponse{
+			BudgetUsage: res.BudgetUsage,
+		})
+		if err == nil {
+			fmt.Printf("    Fee Estimate: %d–%d stroops\n", gasEst.EstimatedFeeLowerBound, gasEst.EstimatedFeeUpperBound)
+		}
 	}
 
 	// Diagnostic events
@@ -1457,6 +1449,27 @@ func printSimulationResult(network string, res *simulator.SimulationResponse) {
 			fmt.Printf("    [%d] %s", i+1, visualizer.Colorize(event.EventType, eventTypeColor))
 			if event.ContractID != nil {
 				fmt.Printf("  %s", visualizer.Colorize(*event.ContractID, "dim"))
+			}
+			// Add resource info: CPU, Mem, and Fee for this event
+			if event.CPU != nil || event.Mem != nil {
+				var cpuStr, memStr, feeStr string
+				if event.CPU != nil {
+					cpuStr = fmt.Sprintf("CPU: %d", *event.CPU)
+				}
+				if event.Mem != nil {
+					memStr = fmt.Sprintf("Mem: %d", *event.Mem)
+				}
+				if event.CPU != nil && event.Mem != nil {
+					fee := (*event.CPU / 10000) + (*event.Mem / (64*1024))
+					feeStr = fmt.Sprintf("Fee: %d stroops", fee)
+				}
+				parts := []string{}
+				if cpuStr != "" { parts = append(parts, cpuStr) }
+				if memStr != "" { parts = append(parts, memStr) }
+				if feeStr != "" { parts = append(parts, feeStr) }
+				if len(parts) > 0 {
+					fmt.Printf("  %s", strings.Join(parts, " "))
+				}
 			}
 			if deprecatedFn, ok := deprecatedHostFunctionInDiagnosticEvent(event); ok {
 				fmt.Printf("  %s %s",

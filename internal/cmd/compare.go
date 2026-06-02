@@ -54,20 +54,24 @@ How it works:
   2. Run two simulation passes in parallel:
        - Pass A: uses the local WASM file you provide (--wasm).
        - Pass B: uses the on-chain WASM (normal replay, no --wasm flag).
-  3. Diff the two results and print a colour-coded side-by-side report.
+  3. Diff the two results and print a colour-coded side-by-side report.`,
+	Example: `  # Compare your local contract against a mainnet transaction
+  glassbox compare <tx-hash> --wasm ./my_contract.wasm
 
-Examples:
-  # Compare your local contract against a mainnet transaction
-  Glassbox compare <tx-hash> --wasm ./my_contract.wasm
-
-  # Compare on testnet with verbose output
-  Glassbox compare <tx-hash> --wasm ./contract.wasm --network testnet --verbose
+  # Compare on testnet with verbose diagnostic output
+  glassbox compare <tx-hash> --wasm ./contract.wasm --network testnet --verbose
 
   # Bridge external contract calls to local builds during replay
-  Glassbox compare <tx-hash> --wasm ./root.wasm --bridge-wasm CABC...=./deps/token.wasm
+  glassbox compare <tx-hash> --wasm ./root.wasm --bridge-wasm CABC...=./deps/token.wasm
 
-  # Override the protocol version used for both passes
-  Glassbox compare <tx-hash> --wasm ./contract.wasm --protocol-version 22`,
+  # Override the protocol version used for both simulation passes
+  glassbox compare <tx-hash> --wasm ./contract.wasm --protocol-version 22
+
+  # Apply dead-code elimination to the local WASM before comparison
+  glassbox compare <tx-hash> --wasm ./contract.wasm --optimize
+
+  # Use a dark colour theme for the diff output
+  glassbox compare <tx-hash> --wasm ./contract.wasm --theme dark`,
 	Args: cobra.ExactArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		if cmpLocalWasmFlag == "" {
@@ -113,7 +117,7 @@ func init() {
 	compareCmd.Flags().StringVar(&cmpSimPathFlag, "sim-path", "",
 		"Path to glassbox-sim binary (overrides auto-discovery)")
 	compareCmd.Flags().StringVar(&cmpThemeFlag, "theme", "",
-		"Colour theme (default, deuteranopia, protanopia, tritanopia, high-contrast)")
+		"Colour theme (default, dark, light, deuteranopia, protanopia, tritanopia, high-contrast)")
 	compareCmd.Flags().Uint32Var(&cmpProtoFlag, "protocol-version", 0,
 		"Override protocol version for both simulation passes (20, 21, 22, …)")
 	_ = compareCmd.RegisterFlagCompletionFunc("network", completeNetworkFlag)

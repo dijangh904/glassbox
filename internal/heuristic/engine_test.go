@@ -520,3 +520,65 @@ func TestRenderTemplate_InvalidTemplate(t *testing.T) {
 		t.Error("expected error for invalid template")
 	}
 }
+
+// ─── Storage overflow heuristic rules ────────────────────────────────────────
+
+func TestEngine_StorageOverflow_EntryCount(t *testing.T) {
+	in := Input{
+		TxHash:  "aaaaaa000000bbbbbb",
+		Network: "testnet",
+		Status:  "error",
+		Error:   "error(storage, full): too many ledger entries",
+	}
+	got := defaultEngine.Evaluate(in)
+	if !strings.Contains(strings.ToLower(got), "storage") {
+		t.Errorf("expected storage mention in output, got: %s", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "archive") || !strings.Contains(strings.ToLower(got), "transaction") {
+		t.Errorf("expected remediation guidance in output, got: %s", got)
+	}
+}
+
+func TestEngine_StorageOverflow_EntrySize(t *testing.T) {
+	in := Input{
+		TxHash:  "aaaaaa000000bbbbbb",
+		Network: "mainnet",
+		Status:  "error",
+		Error:   "ledger entry too large: value exceeds size limit",
+	}
+	got := defaultEngine.Evaluate(in)
+	if !strings.Contains(strings.ToLower(got), "storage") || !strings.Contains(strings.ToLower(got), "size") {
+		t.Errorf("expected storage/size mention in output, got: %s", got)
+	}
+}
+
+func TestEngine_StorageOverflow_FootprintTooLarge(t *testing.T) {
+	in := Input{
+		TxHash:  "aaaaaa000000bbbbbb",
+		Network: "futurenet",
+		Status:  "error",
+		Error:   "footprint exceed: too many keys in read set",
+	}
+	got := defaultEngine.Evaluate(in)
+	if !strings.Contains(strings.ToLower(got), "footprint") {
+		t.Errorf("expected footprint mention in output, got: %s", got)
+	}
+}
+
+func TestEngine_StorageOverflow_PrioritisedBeforeMissingEntry(t *testing.T) {
+	// "storagefull" must fire storage-overflow (priority 38) before missing-ledger-entry
+	// (priority 40) even though missing-ledger-entry has pattern "error(storage,".
+	in := Input{
+		TxHash:  "aaaaaa000000bbbbbb",
+		Network: "mainnet",
+		Status:  "error",
+		Error:   "StorageFull: ledger entry count limit exceeded",
+	}
+	got := defaultEngine.Evaluate(in)
+	if !strings.Contains(strings.ToLower(got), "storage") {
+		t.Errorf("expected storage-overflow rule to fire, got: %s", got)
+	}
+	if strings.Contains(strings.ToLower(got), "not present") {
+		t.Errorf("missing-ledger-entry rule should NOT have fired, got: %s", got)
+	}
+}

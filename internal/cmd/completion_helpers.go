@@ -13,10 +13,18 @@ import (
 
 var networkAliases = []string{"testnet\tStellar test network", "mainnet\tStellar public network", "futurenet\tStellar future network"}
 var initNetworkAliases = []string{"public\tStellar public network", "testnet\tStellar test network", "futurenet\tStellar future network", "standalone\tLocal standalone network"}
-var themeNames = []string{"default\tStandard terminal colors", "deuteranopia\tRed-green color blind friendly", "protanopia\tRed color blind friendly", "tritanopia\tBlue-yellow color blind friendly", "high-contrast\tHigh contrast for low-vision"}
+var themeNames = []string{
+	"default\tStandard terminal colors",
+	"dark\tDark terminal background",
+	"light\tLight terminal background",
+	"deuteranopia\tRed-green color blind friendly",
+	"protanopia\tRed color blind friendly",
+	"tritanopia\tBlue-yellow color blind friendly",
+	"high-contrast\tHigh contrast for low-vision",
+}
 var xdrFormats = []string{"json\tJSON output", "table\tTabular output"}
 var xdrTypes = []string{"ledger-entry\tLedger entry XDR", "diagnostic-event\tDiagnostic event XDR"}
-var reportFormats = []string{"html\tHTML report", "pdf\tPDF report", "json\tJSON report", "html,pdf\tBoth HTML and PDF"}
+var reportFormats = []string{"text\tText diagnostic summary", "json\tJSON diagnostic summary", "html\tHTML report", "pdf\tPDF report", "html,pdf\tBoth HTML and PDF"}
 
 func completeNetworkFlag(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 	completions := append([]string{}, networkAliases...)

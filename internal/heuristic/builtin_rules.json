@@ -110,6 +110,41 @@
       "template": "Transaction {{.TxHash}} failed on {{.Network}} because an account or contract held insufficient balance to cover the requested transfer."
     },
     {
+      "id": "storage-overflow",
+      "description": "Contract storage is full or the per-transaction storage entry limit was exceeded",
+      "priority": 38,
+      "severity": "error",
+      "match_kind": "any",
+      "patterns": [
+        "storagefull",
+        "storage full",
+        "storage limit exceeded",
+        "error(storage, full",
+        "error(storage,full",
+        "max_ledger_entries_exceeded",
+        "too many ledger entries",
+        "ledger entry count limit"
+      ],
+      "template": "Transaction {{.TxHash}} failed on {{.Network}} because the Soroban contract storage is full or the per-transaction storage entry limit was exceeded. To resolve this: archive unused ledger entries, reduce the number of keys written in a single transaction, or split the operation across multiple transactions."
+    },
+    {
+      "id": "ledger-entry-size-limit",
+      "description": "A single ledger entry value exceeds the maximum allowed size",
+      "priority": 39,
+      "severity": "error",
+      "match_kind": "any",
+      "patterns": [
+        "entry size exceeded",
+        "ledger entry too large",
+        "entry too large",
+        "value size limit",
+        "value_size_limit_exceeded",
+        "re:entry.*size.*exceeded",
+        "re:size.*limit.*ledger"
+      ],
+      "template": "Transaction {{.TxHash}} failed on {{.Network}} because a ledger entry exceeded the maximum allowed size. Reduce the amount of data stored in a single storage key, or split large values across multiple keys with smaller payloads."
+    },
+    {
       "id": "missing-ledger-entry",
       "description": "Required ledger entry or contract storage key was absent",
       "priority": 40,
@@ -122,6 +157,24 @@
         "not found"
       ],
       "template": "Transaction {{.TxHash}} failed on {{.Network}} because a required ledger entry or contract storage key was not present at execution time."
+    },
+    {
+      "id": "footprint-too-large",
+      "description": "The transaction footprint (set of ledger keys read or written) exceeds the per-transaction limit",
+      "priority": 41,
+      "severity": "error",
+      "match_kind": "any",
+      "patterns": [
+        "footprint too large",
+        "too many keys",
+        "too many ledger keys",
+        "read footprint exceeded",
+        "write footprint exceeded",
+        "re:footprint.*too.*large",
+        "re:too many.*footprint",
+        "re:footprint.*exceed"
+      ],
+      "template": "Transaction {{.TxHash}} failed on {{.Network}} because the transaction's ledger footprint (the set of keys it reads or writes) exceeded the per-transaction limit. Reduce the number of storage keys accessed in a single transaction, or break the operation into smaller batches."
     },
     {
       "id": "wasm-trap",

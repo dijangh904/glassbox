@@ -554,6 +554,83 @@ func TestFailureDiagnostic_String_Nil(t *testing.T) {
 	}
 }
 
+// ─── Storage overflow ─────────────────────────────────────────────────────────
+
+func TestClassifyFailure_StorageOverflow_ViaErrorCode(t *testing.T) {
+	codes := []string{"STORAGE_OVERFLOW", "STORAGE_FULL", "SOROBAN_STORAGE_FULL", "LEDGER_ENTRY_COUNT_LIMIT_EXCEEDED"}
+	for _, code := range codes {
+		resp := &SimulationResponse{Status: "error", ErrorCode: code, Error: "storage limit exceeded"}
+		d := ClassifyFailure(resp)
+		if d == nil || d.Category != FailureStorageOverflow {
+			t.Errorf("code %q: expected %s, got %v", code, FailureStorageOverflow, d)
+		}
+	}
+}
+
+func TestClassifyFailure_StorageOverflow_ViaMessage(t *testing.T) {
+	tests := []struct {
+		msg  string
+		kind string
+	}{
+		{"error(storage, full): too many entries", "entry_count"},
+		{"StorageFull: ledger entry count limit exceeded", "entry_count"},
+		{"storage limit exceeded for this transaction", "entry_count"},
+		{"ledger entry too large: value exceeds 64KB", "entry_size"},
+		{"entry size exceeded: 65536 bytes written", "entry_size"},
+		{"value_size_limit_exceeded in contract storage", "entry_size"},
+		{"footprint exceed: too many keys in read set", "footprint"},
+	}
+	for _, tt := range tests {
+		resp := &SimulationResponse{Status: "error", Error: tt.msg}
+		d := ClassifyFailure(resp)
+		if d == nil {
+			t.Fatalf("message %q: expected non-nil diagnostic", tt.msg)
+		}
+		if d.Category != FailureStorageOverflow {
+			t.Errorf("message %q: expected %s, got %s", tt.msg, FailureStorageOverflow, d.Category)
+			continue
+		}
+		if d.StorageDetails == nil {
+			t.Errorf("message %q: expected StorageDetails to be populated", tt.msg)
+			continue
+		}
+		if d.StorageDetails.OverflowKind != tt.kind {
+			t.Errorf("message %q: expected OverflowKind=%q, got %q", tt.msg, tt.kind, d.StorageDetails.OverflowKind)
+		}
+		if d.StorageDetails.Suggestion == "" {
+			t.Errorf("message %q: expected non-empty Suggestion", tt.msg)
+		}
+	}
+}
+
+func TestClassifyFailure_StorageOverflow_SummaryIsNonEmpty(t *testing.T) {
+	resp := &SimulationResponse{
+		Status:    "error",
+		ErrorCode: "STORAGE_FULL",
+		Error:     "storage full: max_ledger_entries_exceeded",
+	}
+	d := ClassifyFailure(resp)
+	if d == nil {
+		t.Fatal("expected non-nil diagnostic")
+	}
+	if d.Summary == "" {
+		t.Error("Summary should not be empty for storage overflow")
+	}
+}
+
+func TestClassifyFailure_StorageOverflow_Priority_OverValidation(t *testing.T) {
+	// A message that could look like a validation error but is actually storage overflow.
+	resp := &SimulationResponse{
+		Status:    "error",
+		ErrorCode: "STORAGE_OVERFLOW",
+		Error:     "storage limit exceeded: tx_soroban_invalid",
+	}
+	d := ClassifyFailure(resp)
+	if d == nil || d.Category != FailureStorageOverflow {
+		t.Errorf("expected %s (storage takes priority over validation), got %v", FailureStorageOverflow, d)
+	}
+}
+
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 func containsCI(s, sub string) bool {

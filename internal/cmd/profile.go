@@ -28,6 +28,7 @@ var (
 
 var profileCmd = &cobra.Command{
 	Use:     "profile [trace-file]",
+	Aliases: []string{"ps"},
 	GroupID: "testing",
 	Short:   "Advanced gas usage analysis and optimization advisor",
 	Long: `Analyze gas consumption and receive actionable optimization recommendations.

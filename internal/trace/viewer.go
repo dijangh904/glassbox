@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
+	"github.com/dotandev/glassbox/internal/abi"
 	"github.com/dotandev/glassbox/internal/dwarf"
 	"github.com/dotandev/glassbox/internal/visualizer"
 )
@@ -303,6 +304,7 @@ func (v *InteractiveViewer) flatTraceNodes() []*TraceNode {
 		n.Function = s.Function
 		n.Error = s.Error
 		n.EventData = s.WasmInstruction
+		n.ContractMetadata = s.ContractMetadata
 		nodes = append(nodes, n)
 	}
 	return nodes
@@ -1084,6 +1086,7 @@ func executionStateToNode(state *ExecutionState) *TraceNode {
 	node := NewTraceNode(fmt.Sprintf("step-%d", state.Step), state.Operation)
 	node.ContractID = state.ContractID
 	node.Function = state.Function
+	node.ContractMetadata = state.ContractMetadata
 	if state.Error != "" {
 		node.Error = state.Error
 		node.Type = "error"

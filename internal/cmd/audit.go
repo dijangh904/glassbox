@@ -13,6 +13,7 @@ import (
 
 	"github.com/dotandev/glassbox/internal/errors"
 	"github.com/dotandev/glassbox/internal/signer"
+	"github.com/dotandev/glassbox/internal/trace"
 )
 
 // AttestationCertificate represents a single X.509 certificate in the
@@ -49,10 +50,11 @@ type AuditLog struct {
 
 // Payload contains the actual trace data
 type Payload struct {
-	EnvelopeXdr   string   `json:"envelope_xdr"`
-	ResultMetaXdr string   `json:"result_meta_xdr"`
-	Events        []string `json:"events"`
-	Logs          []string `json:"logs"`
+	EnvelopeXdr    string                 `json:"envelope_xdr"`
+	ResultMetaXdr  string                 `json:"result_meta_xdr"`
+	Events         []string               `json:"events"`
+	DecodedEvents  []*trace.ContractEvent `json:"decoded_events,omitempty"`
+	Logs           []string               `json:"logs"`
 }
 
 // GenerateOptions controls optional audit generation behavior
@@ -61,6 +63,8 @@ type GenerateOptions struct {
 	// audit log. The attestation data is included in the hash to prevent
 	// post-signing removal or substitution.
 	HardwareAttestation *HardwareAttestation
+	// EventSchemas enables readable decoded event output in audit payloads.
+	EventSchemas *trace.EventSchemaSet
 }
 
 // Generate creates a signed audit log from the simulation results.
@@ -88,6 +92,9 @@ func GenerateWithSigner(txHash string, envelopeXdr, resultMetaXdr string, events
 		ResultMetaXdr: resultMetaXdr,
 		Events:        events,
 		Logs:          logs,
+	}
+	if opts != nil && opts.EventSchemas != nil {
+		payload.DecodedEvents = trace.DecodeContractEventsWithSchemas(events, opts.EventSchemas)
 	}
 
 	// 2. Construct the hash input.

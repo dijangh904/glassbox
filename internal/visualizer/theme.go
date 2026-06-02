@@ -3,7 +3,11 @@
 
 package visualizer
 
-import "os"
+import (
+	"os"
+	"strconv"
+	"strings"
+)
 
 // Theme defines a color palette for terminal output
 type Theme string
@@ -30,7 +34,12 @@ func GetTheme() Theme {
 	return currentTheme
 }
 
-// DetectTheme attempts to detect an appropriate theme from environment
+// DetectTheme attempts to detect an appropriate theme from environment.
+// Detection order:
+//  1. GLASSBOX_THEME env var (explicit user override)
+//  2. COLORFGBG env var (set by many terminals; encodes fg/bg color indices)
+//  3. COLORTERM=truecolor (true-colour capable terminal → default palette)
+//  4. High-contrast fallback for limited-colour environments
 func DetectTheme() Theme {
 	if theme := os.Getenv("GLASSBOX_THEME"); theme != "" {
 		switch theme {
@@ -42,10 +51,34 @@ func DetectTheme() Theme {
 			return Theme(theme)
 		}
 	}
+	// COLORFGBG is exported by rxvt, konsole, and other terminals as "fg;bg"
+	// or "fg;unused;bg".  A background index >= 8 means a bright (light) color.
+	if colorfgbg := os.Getenv("COLORFGBG"); colorfgbg != "" {
+		if terminalBackgroundIsLight(colorfgbg) {
+			return ThemeLight
+		}
+		return ThemeDark
+	}
 	if os.Getenv("COLORTERM") == "truecolor" {
 		return ThemeDefault
 	}
 	return ThemeHighContrast
+}
+
+// terminalBackgroundIsLight parses a COLORFGBG value (format "fg;bg" or "fg;mid;bg")
+// and returns true when the background color index indicates a light background.
+func terminalBackgroundIsLight(colorfgbg string) bool {
+	parts := strings.Split(colorfgbg, ";")
+	if len(parts) == 0 {
+		return false
+	}
+	bg := strings.TrimSpace(parts[len(parts)-1])
+	n, err := strconv.Atoi(bg)
+	if err != nil {
+		return false
+	}
+	// ANSI indices 8–15 are the bright/light variants (15 = white).
+	return n >= 8
 }
 
 // themeColors maps semantic color names to ANSI codes per theme

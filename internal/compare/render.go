@@ -323,3 +323,49 @@ func max(a, b int) int {
 	}
 	return b
 }
+
+// RenderCrossCheck prints a human-readable cross-check report to stdout.
+// It highlights whether the local simulation result agrees with the network
+// failure reason and surfaces any discrepancies.
+func RenderCrossCheck(r *CrossCheckResult) {
+	if r == nil {
+		return
+	}
+
+	fmt.Println()
+	fmt.Println(sectionTitle("Simulation vs Network Cross-Check"))
+	fmt.Println()
+
+	if r.Match {
+		fmt.Printf("  %s  Categories agree: %s\n",
+			visualizer.Success(), visualizer.Colorize(string(r.LocalCategory), "green"))
+	} else {
+		fmt.Printf("  %s  Mismatch detected\n", visualizer.Warning())
+		fmt.Println()
+		fmt.Printf("  %-20s [%s]\n", "Local simulation:",
+			visualizer.Colorize(string(r.LocalCategory), "cyan"))
+		if r.LocalSummary != "" {
+			fmt.Printf("  %-20s %s\n", "", truncate(r.LocalSummary, colWidth))
+		}
+		fmt.Println()
+		fmt.Printf("  %-20s [%s]\n", "Network report:",
+			visualizer.Colorize(string(r.NetworkCategory), "magenta"))
+		if r.NetworkReason != "" {
+			fmt.Printf("  %-20s %s\n", "", truncate(r.NetworkReason, colWidth))
+		}
+
+		if len(r.Discrepancies) > 0 {
+			fmt.Println()
+			fmt.Printf("  %s\n", visualizer.Colorize("Discrepancies:", "yellow"))
+			for _, d := range r.Discrepancies {
+				fmt.Printf("    • %s\n", d)
+			}
+		}
+	}
+
+	fmt.Println()
+	fmt.Printf("  %s\n", r.Explanation)
+	fmt.Println()
+	sep := strings.Repeat("─", colWidth*2+len(columnSep))
+	fmt.Println(visualizer.Colorize(sep, "dim"))
+}

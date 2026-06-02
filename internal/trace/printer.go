@@ -31,8 +31,8 @@ type PrintOptions struct {
 	// Output is the writer to send the report to. nil defaults to os.Stdout.
 	Output io.Writer
 
-	// Verbosity controls how much detail is printed per step.
-	Verbosity Verbosity
+	// EventSchemas optionally decodes diagnostic contract events for printing.
+	EventSchemas *EventSchemaSet
 }
 
 func (o PrintOptions) writer() io.Writer {
@@ -222,6 +222,16 @@ func PrintExecutionTrace(t *ExecutionTrace, opts PrintOptions) {
 				}
 			}
 		}
+		if state.Cost != nil {
+			_, _ = fmt.Fprintf(out, "%s  %s %s\n",
+				continuation,
+				p.budgetLabel.Sprint("Cost:"),
+				p.budgetVal.Sprint(FormatCostAnnotation(state.Cost)),
+			)
+			for _, line := range FormatCostBreakdown(state.Cost) {
+				_, _ = fmt.Fprintf(out, "%s    %s\n", continuation, p.dimmed.Sprint(line))
+			}
+		}
 
 		// ── detect final status from host_state ───────────────────────────────
 		if state.HostState != nil {
@@ -232,6 +242,19 @@ func PrintExecutionTrace(t *ExecutionTrace, opts PrintOptions) {
 	}
 
 	// ── footer ───────────────────────────────────────────────────────────────
+	if len(t.DecodedEvents) > 0 || len(t.DiagnosticEvents) > 0 {
+		events := t.DecodedEvents
+		if len(events) == 0 {
+			events = DecodeDiagnosticEventsWithSchemas(t.DiagnosticEvents, opts.EventSchemas)
+		}
+		CorrelateEvents(events, t)
+		_, _ = p.separator.Fprintln(out, sep)
+		_, _ = p.header.Fprintln(out, " Decoded Contract Events")
+		for _, ev := range events {
+			_, _ = fmt.Fprintf(out, " %s\n", formatEventSummary(ev))
+		}
+	}
+
 	_, _ = p.separator.Fprintln(out, sep)
 	printSummaryLine(out, p, total, errorCount, finalStatus)
 	_, _ = fmt.Fprintln(out)
@@ -367,6 +390,16 @@ func printTreeNode(out io.Writer, p palette, node *TraceNode, prefix string, isL
 			budget.WriteString(p.budgetVal.Sprint(formatBytes(*node.MemoryDelta)))
 		}
 		_, _ = fmt.Fprintln(out, budget.String())
+	}
+	if node.Cost != nil {
+		_, _ = fmt.Fprintf(out, "%s  %s %s\n",
+			childPrefix,
+			p.budgetLabel.Sprint("Cost:"),
+			p.budgetVal.Sprint(FormatCostAnnotation(node.Cost)),
+		)
+		for _, line := range FormatCostBreakdown(node.Cost) {
+			_, _ = fmt.Fprintf(out, "%s    %s\n", childPrefix, p.dimmed.Sprint(line))
+		}
 	}
 
 	// ── children ──────────────────────────────────────────────────────────────

@@ -34,8 +34,8 @@ func TestCompleteThemeFlag(t *testing.T) {
 	if directive != cobra.ShellCompDirectiveNoFileComp {
 		t.Fatalf("expected ShellCompDirectiveNoFileComp, got %v", directive)
 	}
-	if len(completions) != 5 {
-		t.Fatalf("expected 5 theme completions, got %d", len(completions))
+	if len(completions) != 7 {
+		t.Fatalf("expected 7 theme completions, got %d", len(completions))
 	}
 }
 
@@ -64,8 +64,8 @@ func TestCompleteReportFormatFlag(t *testing.T) {
 	if directive != cobra.ShellCompDirectiveNoFileComp {
 		t.Fatalf("expected ShellCompDirectiveNoFileComp, got %v", directive)
 	}
-	if len(completions) != 4 {
-		t.Fatalf("expected 4 report format completions, got %d", len(completions))
+	if len(completions) != 5 {
+		t.Fatalf("expected 5 report format completions, got %d", len(completions))
 	}
 }
 

@@ -3,23 +3,29 @@
 
 package trace
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/dotandev/glassbox/internal/abi"
+)
 
 // TraceNode represents a single node in the execution trace tree
 type TraceNode struct {
-	ID          string       // Unique identifier for this node
-	Type        string       // Type of event: "contract_call", "host_fn", "error", "event"
-	ContractID  string       // Contract ID if applicable
-	Function    string       // Function name being called
-	Error       string       // Error message if this is an error node
-	EventData   string       // Event data/payload
-	Depth       int          // Depth in the call tree (0 = root)
-	Children    []*TraceNode // Child nodes in the execution tree
-	Parent      *TraceNode   // Parent node (nil for root)
-	Expanded    bool         // Whether this node is expanded in the UI
-	SourceRef   *SourceRef   // Optional source mapping from WASM debug info; nil if unknown
-	CPUDelta    *uint64      // CPU instructions consumed by this node (nil if not tracked)
-	MemoryDelta *uint64      // Memory bytes consumed by this node (nil if not tracked)
+	ID               string               // Unique identifier for this node
+	Type             string               // Type of event: "contract_call", "host_fn", "error", "event"
+	ContractID       string               // Contract ID if applicable
+	Function         string               // Function name being called
+	Error            string               // Error message if this is an error node
+	EventData        string               // Event data/payload
+	Depth            int                  // Depth in the call tree (0 = root)
+	Children         []*TraceNode         // Child nodes in the execution tree
+	Parent           *TraceNode           // Parent node (nil for root)
+	Expanded         bool                 // Whether this node is expanded in the UI
+	SourceRef        *SourceRef           // Optional source mapping from WASM debug info; nil if unknown
+	CPUDelta         *uint64              // CPU instructions consumed by this node (nil if not tracked)
+	MemoryDelta      *uint64              // Memory bytes consumed by this node (nil if not tracked)
+	Cost             *CostAnnotation       // Cost or budget annotation for this node
+	ContractMetadata *abi.ContractMetadata // Contract metadata for contract call nodes
 }
 
 // NewTraceNode creates a new trace node
