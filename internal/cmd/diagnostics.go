@@ -4,6 +4,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var diagnosticsJSONFlag bool
+
 var diagnosticsCmd = &cobra.Command{
 	Use:     "diagnostics",
 	Aliases: []string{"diag", "dashboard"},
@@ -33,20 +36,22 @@ This command aggregates data from:
   - Configuration
   - Plugins
 
-Use --json for machine-readable output.`,
+Use --json for machine-readable output suitable for automation and CI.`,
 	Args: cobra.NoArgs,
 	RunE: runDiagnostics,
 }
 
+// DiagnosticsOutput is the structured representation of all diagnostics data.
+// It is used for both the human-readable dashboard and the --json output path.
 type DiagnosticsOutput struct {
-	Version       string              `json:"version"`
-	Timestamp     time.Time           `json:"timestamp"`
-	System        SystemInfo          `json:"system"`
-	RPC           []RPCStatus         `json:"rpc"`
-	Cache         CacheStatus         `json:"cache"`
-	Config        ConfigSummary       `json:"config"`
-	Plugins       []PluginSummary     `json:"plugins"`
-	OverallHealth string              `json:"overall_health"`
+	Version       string          `json:"version"`
+	Timestamp     time.Time       `json:"timestamp"`
+	System        SystemInfo      `json:"system"`
+	RPC           []RPCStatus     `json:"rpc"`
+	Cache         CacheStatus     `json:"cache"`
+	Config        ConfigSummary   `json:"config"`
+	Plugins       []PluginSummary `json:"plugins"`
+	OverallHealth string          `json:"overall_health"`
 }
 
 type SystemInfo struct {
@@ -56,11 +61,11 @@ type SystemInfo struct {
 }
 
 type RPCStatus struct {
-	URL      string        `json:"url"`
-	Status   string        `json:"status"`
-	Latency  time.Duration `json:"latency_ms"`
-	Error    string        `json:"error,omitempty"`
-	Healthy  bool          `json:"healthy"`
+	URL     string        `json:"url"`
+	Status  string        `json:"status"`
+	Latency time.Duration `json:"latency_ms"`
+	Error   string        `json:"error,omitempty"`
+	Healthy bool          `json:"healthy"`
 }
 
 type CacheStatus struct {
@@ -94,8 +99,8 @@ func runDiagnostics(cmd *cobra.Command, args []string) error {
 
 	// System Info
 	output.System = SystemInfo{
-		OS:      runtime.GOOS,
-		Arch:    runtime.GOARCH,
+		OS:   runtime.GOOS,
+		Arch: runtime.GOARCH,
 	}
 	home, err := os.UserHomeDir()
 	if err == nil {
@@ -112,11 +117,15 @@ func runDiagnostics(cmd *cobra.Command, args []string) error {
 			RPCURL:  cfg.RpcUrl,
 			Healthy: true,
 		}
+	} else {
+		output.Config = ConfigSummary{
+			Healthy: false,
+		}
 	}
 
 	// RPC Health Check
 	var rpcURLs []string
-	if err == nil {
+	if cfg != nil {
 		if len(cfg.SorobanRpcUrls) > 0 {
 			rpcURLs = cfg.SorobanRpcUrls
 		} else if len(cfg.RpcUrls) > 0 {
@@ -129,7 +138,7 @@ func runDiagnostics(cmd *cobra.Command, args []string) error {
 	if cfg != nil && cfg.RequestTimeout > 0 {
 		timeout = time.Duration(cfg.RequestTimeout) * time.Second
 	}
-	client := &http.Client{Timeout: timeout}
+	httpClient := &http.Client{Timeout: timeout}
 	output.RPC = make([]RPCStatus, 0, len(rpcURLs))
 	for _, url := range rpcURLs {
 		url = strings.TrimSpace(url)
@@ -138,10 +147,10 @@ func runDiagnostics(cmd *cobra.Command, args []string) error {
 		}
 		rpcStatus := RPCStatus{URL: url, Status: "[OK]", Healthy: true}
 		start := time.Now()
-		resp, err := client.Get(url)
-		if err != nil {
+		resp, reqErr := httpClient.Get(url) //nolint:noctx
+		if reqErr != nil {
 			rpcStatus.Status = "[FAIL]"
-			rpcStatus.Error = err.Error()
+			rpcStatus.Error = reqErr.Error()
 			rpcStatus.Healthy = false
 		} else {
 			resp.Body.Close()
@@ -159,14 +168,18 @@ func runDiagnostics(cmd *cobra.Command, args []string) error {
 	cacheDir := getCacheDir()
 	manager := cache.NewManager(cacheDir, cache.DefaultConfig())
 	output.Cache.Directory = cacheDir
-	size, err := manager.GetCacheSize()
-	if err == nil {
-		output.Cache.Size = formatBytes(size)
+	cacheSize, cacheSizeErr := manager.GetCacheSize()
+	if cacheSizeErr == nil {
+		output.Cache.Size = formatBytes(cacheSize)
 		output.Cache.MaxSize = formatBytes(cache.DefaultConfig().MaxSizeBytes)
-		output.Cache.Healthy = size <= cache.DefaultConfig().MaxSizeBytes
+		output.Cache.Healthy = cacheSize <= cache.DefaultConfig().MaxSizeBytes
+	} else {
+		output.Cache.Size = "unknown"
+		output.Cache.MaxSize = formatBytes(cache.DefaultConfig().MaxSizeBytes)
+		output.Cache.Healthy = true // treat unknown as healthy; don't block on cache errors
 	}
-	files, err := manager.ListCachedFiles()
-	if err == nil {
+	files, listErr := manager.ListCachedFiles()
+	if listErr == nil {
 		output.Cache.FileCount = len(files)
 	}
 
@@ -194,110 +207,127 @@ func runDiagnostics(cmd *cobra.Command, args []string) error {
 	if !output.Cache.Healthy {
 		output.OverallHealth = "Degraded"
 	}
+	if !output.Config.Healthy {
+		output.OverallHealth = "Degraded"
+	}
 
-	// Print Dashboard
+	// --json: emit structured output and return early
+	if diagnosticsJSONFlag {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(output)
+	}
+
+	// Human-readable dashboard
 	printDiagnosticsDashboard(w, output)
-
 	return nil
 }
 
 func printDiagnosticsDashboard(w io.Writer, out DiagnosticsOutput) {
-	fmt.Fprintln(w("╔═══════════════════════════════════════════════════════════════╗")
-	fmt.Fprintln(w("║                    GLASSBOX DIAGNOSTICS                       ║")
-	fmt.Fprintln(w("╚═══════════════════════════════════════════════════════════════╝")
-	fmt.Fprintln(w()
-	fmt.Fprintf(w("Version:     %s\n", out.Version)
-	fmt.Fprintf(w("Timestamp:   %s\n", out.Timestamp.Format(time.RFC1123))
-	fmt.Fprintf(w("Overall:     ")
+	fmt.Fprintln(w, "╔═══════════════════════════════════════════════════════════════╗")
+	fmt.Fprintln(w, "║                    GLASSBOX DIAGNOSTICS                       ║")
+	fmt.Fprintln(w, "╚═══════════════════════════════════════════════════════════════╝")
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Version:     %s\n", out.Version)
+	fmt.Fprintf(w, "Timestamp:   %s\n", out.Timestamp.Format(time.RFC1123))
+	fmt.Fprint(w, "Overall:     ")
 	if out.OverallHealth == "Healthy" {
-		fmt.Fprintf(w("\033[32m%s\033[0m\n", out.OverallHealth)
+		fmt.Fprintf(w, "\033[32m%s\033[0m\n", out.OverallHealth)
 	} else {
-		fmt.Fprintf(w("\033[33m%s\033[0m\n", out.OverallHealth)
+		fmt.Fprintf(w, "\033[33m%s\033[0m\n", out.OverallHealth)
 	}
-	fmt.Fprintln(w()
+	fmt.Fprintln(w)
 
 	// Section: System
-	fmt.Fprintln(w("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Fprintln(w("SYSTEM INFO")
-	fmt.Fprintln(w("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Fprintf(w("OS:          %s\n", out.System.OS)
-	fmt.Fprintf(w("Arch:        %s\n", out.System.Arch)
+	fmt.Fprintln(w, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Fprintln(w, "SYSTEM INFO")
+	fmt.Fprintln(w, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Fprintf(w, "OS:          %s\n", out.System.OS)
+	fmt.Fprintf(w, "Arch:        %s\n", out.System.Arch)
 	if out.System.HomeDir != "" {
-		fmt.Fprintf(w("Home:        %s\n", out.System.HomeDir)
+		fmt.Fprintf(w, "Home:        %s\n", out.System.HomeDir)
 	}
-	fmt.Fprintln(w()
+	fmt.Fprintln(w)
 
 	// Section: RPC
-	fmt.Fprintln(w("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Fprintln(w("RPC ENDPOINTS")
-	fmt.Fprintln(w("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Fprintln(w, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Fprintln(w, "RPC ENDPOINTS")
+	fmt.Fprintln(w, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	if len(out.RPC) == 0 {
-		fmt.Fprintln(w("No RPC endpoints configured")
+		fmt.Fprintln(w, "No RPC endpoints configured.")
+		fmt.Fprintf(w, "Tip: set rpc_url in your config file or the GLASSBOX_RPC_URL environment variable.\n")
 	} else {
 		for _, r := range out.RPC {
 			if r.Healthy {
-				fmt.Fprintf(w("  \033[32m[OK]\033[0m %s\n", r.URL)
-				fmt.Fprintf(w("      Latency: %v\n", r.Latency)
+				fmt.Fprintf(w, "  \033[32m[OK]\033[0m %s\n", r.URL)
+				fmt.Fprintf(w, "      Latency: %v\n", r.Latency)
 			} else {
-				fmt.Fprintf(w("  \033[31m[FAIL]\033[0m %s\n", r.URL)
-				fmt.Fprintf(w("      Error: %s\n", r.Error)
+				fmt.Fprintf(w, "  \033[31m[FAIL]\033[0m %s\n", r.URL)
+				fmt.Fprintf(w, "      Error: %s\n", r.Error)
+				fmt.Fprintf(w, "      Fix: ensure the endpoint is reachable, check GLASSBOX_RPC_URL or rpc_url config\n")
 			}
-			fmt.Fprintln(w()
+			fmt.Fprintln(w)
 		}
 	}
 
 	// Section: Cache
-	fmt.Fprintln(w("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Fprintln(w("CACHE STATUS")
-	fmt.Fprintln(w("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Fprintf(w("Directory:   %s\n", out.Cache.Directory)
-	fmt.Fprintf(w("Size:        %s / %s\n", out.Cache.Size, out.Cache.MaxSize)
-	fmt.Fprintf(w("Files:       %d\n", out.Cache.FileCount)
+	fmt.Fprintln(w, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Fprintln(w, "CACHE STATUS")
+	fmt.Fprintln(w, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Fprintf(w, "Directory:   %s\n", out.Cache.Directory)
+	fmt.Fprintf(w, "Size:        %s / %s\n", out.Cache.Size, out.Cache.MaxSize)
+	fmt.Fprintf(w, "Files:       %d\n", out.Cache.FileCount)
 	if out.Cache.Healthy {
-		fmt.Fprintf(w("Status:      \033[32mHealthy\033[0m\n")
+		fmt.Fprintf(w, "Status:      \033[32mHealthy\033[0m\n")
 	} else {
-		fmt.Fprintf(w("Status:      \033[33mOver limit\033[0m\n")
+		fmt.Fprintf(w, "Status:      \033[33mOver limit\033[0m — run 'glassbox cache clear' to free space\n")
 	}
-	fmt.Fprintln(w()
+	fmt.Fprintln(w)
 
 	// Section: Config
-	fmt.Fprintln(w("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Fprintln(w("CONFIGURATION")
-	fmt.Fprintln(w("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	if out.Config.Source != "" {
-		fmt.Fprintf(w("Source:      %s\n", out.Config.Source)
+	fmt.Fprintln(w, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Fprintln(w, "CONFIGURATION")
+	fmt.Fprintln(w, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	if !out.Config.Healthy {
+		fmt.Fprintf(w, "Status:      \033[33mNo config file found\033[0m — defaults will be used\n")
+	} else {
+		if out.Config.Source != "" {
+			fmt.Fprintf(w, "Source:      %s\n", out.Config.Source)
+		}
+		if out.Config.Network != "" {
+			fmt.Fprintf(w, "Network:     %s\n", out.Config.Network)
+		}
+		if out.Config.RPCURL != "" {
+			fmt.Fprintf(w, "RPC URL:     %s\n", out.Config.RPCURL)
+		}
 	}
-	if out.Config.Network != "" {
-		fmt.Fprintf(w("Network:     %s\n", out.Config.Network)
-	}
-	if out.Config.RPCURL != "" {
-		fmt.Fprintf(w("RPC URL:     %s\n", out.Config.RPCURL)
-	}
-	fmt.Fprintln(w()
+	fmt.Fprintln(w)
 
 	// Section: Plugins
-	fmt.Fprintln(w("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Fprintln(w("PLUGINS")
-	fmt.Fprintln(w("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Fprintln(w, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Fprintln(w, "PLUGINS")
+	fmt.Fprintln(w, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	if len(out.Plugins) == 0 {
-		fmt.Fprintln(w("No plugins discovered")
+		fmt.Fprintln(w, "No plugins discovered.")
 	} else {
 		for _, p := range out.Plugins {
-			fmt.Fprintf(w("  %s (v%s)\n", p.Name, p.Version)
+			fmt.Fprintf(w, "  %s (v%s)\n", p.Name, p.Version)
 			if len(p.Capabilities) > 0 {
 				caps := make([]string, len(p.Capabilities))
 				for i, c := range p.Capabilities {
 					caps[i] = string(c)
 				}
-				fmt.Fprintf(w("    Capabilities: %s\n", strings.Join(caps, ", "))
+				fmt.Fprintf(w, "    Capabilities: %s\n", strings.Join(caps, ", "))
 			}
-			fmt.Fprintln(w()
+			fmt.Fprintln(w)
 		}
 	}
-	fmt.Fprintln(w()
-	fmt.Fprintln(w("Tip: Run 'glassbox help' to see all commands")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Tip: Run 'glassbox doctor' for a deeper environment health check.")
+	fmt.Fprintln(w, "     Run 'glassbox help' to see all available commands.")
 }
 
 func init() {
+	diagnosticsCmd.Flags().BoolVar(&diagnosticsJSONFlag, "json", false, "Output diagnostics as machine-readable JSON")
 	rootCmd.AddCommand(diagnosticsCmd)
 }

@@ -35,7 +35,6 @@ import (
 	"github.com/dotandev/glassbox/internal/sourcemap"
 	"github.com/dotandev/glassbox/internal/telemetry"
 	"github.com/dotandev/glassbox/internal/trace"
-	"github.com/dotandev/glassbox/internal/trace"
 	"github.com/dotandev/glassbox/internal/tokenflow"
 	simtypes "github.com/dotandev/glassbox/internal/types"
 	"github.com/dotandev/glassbox/internal/version"
@@ -43,8 +42,9 @@ import (
 	"github.com/dotandev/glassbox/internal/wat"
 	"github.com/dotandev/glassbox/internal/watch"
 
-	"github.com/spf13/cobra"
 	"strconv"
+
+	"github.com/spf13/cobra"
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
@@ -89,10 +89,24 @@ var (
 	saveSnapshotsFlag    string
 	wasmBase64           string
 	contractSourceFlag   string
-	debugJSONFlag        bool
-	debugFormatFlag      string
+	debugJSONFlag         bool
+	debugFormatFlag       string
 	skipSourceMappingFlag bool
-	traceVerbosityFlag   string
+	traceVerbosityFlag    string
+
+	// Flags not covered by the compact var block above (declared here to
+	// satisfy all references throughout this file).
+	liveReplayFlag      bool
+	opIndexFlag         int
+	secureWorkspaceFlag bool
+	pinEndpointFlag     string
+	showMetricsFlag     bool
+	debugDryRunFlag     bool
+	sourceAliasFlag     string
+
+	// Telemetry flags (shared with root but also read in debug run path).
+	TelemetryFlag           bool
+	TelemetryAnonymizedFlag bool
 )
 
 // DebugCommand holds dependencies for the debug command
@@ -2178,6 +2192,22 @@ func init() {
 	debugCmd.Flags().StringVar(&debugFormatFlag, "format", "text", "Output format: text or json")
 	debugCmd.Flags().BoolVar(&skipSourceMappingFlag, "skip-source-mapping", false, "Skip DWARF source mapping for faster raw trace replay")
 	debugCmd.Flags().StringVar(&traceVerbosityFlag, "trace-verbosity", "normal", "Trace detail level: summary, normal, or verbose")
+
+	// Dry-run and metrics flags
+	debugCmd.Flags().BoolVar(&debugDryRunFlag, "dry-run", false, "Validate inputs and check environment without running a simulation")
+	debugCmd.Flags().BoolVar(&showMetricsFlag, "show-metrics", false, "Print RPC and simulation performance metrics after the run")
+
+	// Decentralised audit storage flags
+	debugCmd.Flags().StringVar(&auditKeyFlag, "audit-key", "", "Ed25519 private key (PEM) for signing the audit trail before publishing")
+	debugCmd.Flags().BoolVar(&publishIPFSFlag, "publish-ipfs", false, "Publish a signed audit trail to IPFS after simulation")
+	debugCmd.Flags().BoolVar(&publishArweaveFlag, "publish-arweave", false, "Publish a signed audit trail to Arweave after simulation")
+	debugCmd.Flags().StringVar(&ipfsNodeFlag, "ipfs-node", "", "IPFS node API URL (default: public gateway)")
+	debugCmd.Flags().StringVar(&arweaveGatewayFlag, "arweave-gateway", "", "Arweave gateway URL")
+	debugCmd.Flags().StringVar(&arweaveWalletFlag, "arweave-wallet", "", "Path to Arweave wallet JSON file")
+
+	// Source alias mapping flag
+	debugCmd.Flags().StringVar(&sourceAliasFlag, "source-alias", "", "Path to a JSON file mapping embedded source paths to local filesystem paths")
+
 	rootCmd.AddCommand(debugCmd)
 }
 
