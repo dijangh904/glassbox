@@ -21,6 +21,9 @@ func TestCommandExamples(t *testing.T) {
 		{"debug", debugCmd.Example},
 		{"session", sessionCmd.Example},
 		{"cache", cacheCmd.Example},
+		{"report", reportCmd.Example},
+		{"regression-test", regressionTestCmd.Example},
+		{"version", versionCmd.Example},
 	}
 
 	for _, tc := range cases {
@@ -66,6 +69,21 @@ func TestCommandExampleContent(t *testing.T) {
 			example:     heuristicCmd.Example,
 			mustContain: []string{"glassbox heuristic list", "glassbox heuristic validate"},
 		},
+		{
+			name:        "report",
+			example:     reportCmd.Example,
+			mustContain: []string{"glassbox report", "--file", "--format"},
+		},
+		{
+			name:        "regression-test",
+			example:     regressionTestCmd.Example,
+			mustContain: []string{"glassbox regression-test", "--count", "--workers"},
+		},
+		{
+			name:        "version",
+			example:     versionCmd.Example,
+			mustContain: []string{"glassbox version", "--json"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -73,6 +91,45 @@ func TestCommandExampleContent(t *testing.T) {
 			for _, substr := range tc.mustContain {
 				if !strings.Contains(tc.example, substr) {
 					t.Errorf("command %q Example missing expected content %q", tc.name, substr)
+				}
+			}
+		})
+	}
+}
+
+// TestCommandLongDescriptions verifies that the key improved commands have
+// non-empty Long descriptions that mention validation behavior.
+func TestCommandLongDescriptions(t *testing.T) {
+	cases := []struct {
+		name        string
+		long        string
+		mustContain []string
+	}{
+		{
+			name:        "regression-test",
+			long:        regressionTestCmd.Long,
+			mustContain: []string{"--count", "--network"},
+		},
+		{
+			name:        "report",
+			long:        reportCmd.Long,
+			mustContain: []string{"--file", "--format"},
+		},
+		{
+			name:        "version",
+			long:        versionCmd.Long,
+			mustContain: []string{"--json"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.TrimSpace(tc.long) == "" {
+				t.Errorf("command %q has no Long description", tc.name)
+			}
+			for _, substr := range tc.mustContain {
+				if !strings.Contains(tc.long, substr) {
+					t.Errorf("command %q Long description missing %q", tc.name, substr)
 				}
 			}
 		})

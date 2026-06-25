@@ -5,6 +5,7 @@ package simulator
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -78,6 +79,18 @@ func TestRegressionTestSuite(t *testing.T) {
 		assert.Contains(t, summary, "80.0%")
 	})
 
+	t.Run("summary handles zero total gracefully", func(t *testing.T) {
+		suite := &RegressionTestSuite{TotalTests: 0}
+		summary := suite.Summary()
+		// Must not panic and must produce a human-readable message.
+		if summary == "" {
+			t.Error("Summary() should not return empty string for zero-total suite")
+		}
+		if !strings.Contains(summary, "No tests") && !strings.Contains(summary, "0") {
+			t.Errorf("Summary() for zero-total should indicate no tests, got: %q", summary)
+		}
+	})
+
 	t.Run("failed results filters correctly", func(t *testing.T) {
 		suite := &RegressionTestSuite{
 			Results: []RegressionTestResult{
@@ -112,30 +125,55 @@ func TestNewRegressionHarness(t *testing.T) {
 }
 
 func TestRegressionHarness_RunRegressionTests(t *testing.T) {
-	t.Run("validates count parameter", func(t *testing.T) {
+	t.Run("validates count parameter — zero", func(t *testing.T) {
 		harness := NewRegressionHarness(&MockRunner{}, nil, 2)
 
 		suite, err := harness.RunRegressionTests(context.Background(), 0, nil, 0)
 		assert.Error(t, err)
 		assert.Nil(t, suite)
+		// Error message must be actionable.
+		if !strings.Contains(err.Error(), "--count") {
+			t.Errorf("error should mention --count, got: %q", err.Error())
+		}
+	})
 
-		suite, err = harness.RunRegressionTests(context.Background(), -1, nil, 0)
+	t.Run("validates count parameter — negative", func(t *testing.T) {
+		harness := NewRegressionHarness(&MockRunner{}, nil, 2)
+
+		suite, err := harness.RunRegressionTests(context.Background(), -1, nil, 0)
 		assert.Error(t, err)
 		assert.Nil(t, suite)
 	})
 
-	t.Run("handles empty transaction list", func(t *testing.T) {
+	t.Run("nil runner returns descriptive error", func(t *testing.T) {
+		harness := &RegressionHarness{Runner: nil, MaxWorkers: 2}
+
+		suite, err := harness.RunRegressionTests(context.Background(), 5, nil, 0)
+		assert.Error(t, err)
+		assert.Nil(t, suite)
+		if !strings.Contains(err.Error(), "runner") {
+			t.Errorf("error should mention runner, got: %q", err.Error())
+		}
+	})
+
+	t.Run("handles empty transaction list with guidance", func(t *testing.T) {
 		harness := NewRegressionHarness(&MockRunner{}, nil, 2)
 
 		suite, err := harness.RunRegressionTests(context.Background(), 10, nil, 0)
 		assert.Error(t, err)
 		assert.Nil(t, suite)
-		assert.Contains(t, err.Error(), "no failed transactions found")
+		if !strings.Contains(err.Error(), "no failed transactions found") {
+			t.Errorf("error should mention no transactions found, got: %q", err.Error())
+		}
+		// Must give remediation hint.
+		if !strings.Contains(err.Error(), "--start-seq") && !strings.Contains(err.Error(), "start-seq") {
+			t.Errorf("error should suggest --start-seq remediation, got: %q", err.Error())
+		}
 	})
 }
 
 func TestRegressionHarness_TestTransaction(t *testing.T) {
-	t.Run("returns error when RPCClient is nil", func(t *testing.T) {
+	t.Run("returns error when RPCClient is nil — message is actionable", func(t *testing.T) {
 		mockRunner := &MockRunner{
 			RunFunc: func(ctx context.Context, req *SimulationRequest) (*SimulationResponse, error) {
 				return &SimulationResponse{Status: "error"}, nil
@@ -143,11 +181,21 @@ func TestRegressionHarness_TestTransaction(t *testing.T) {
 		}
 		harness := NewRegressionHarness(mockRunner, nil, 2)
 
-		result := harness.testTransaction(context.Background(), "invalid", nil)
+		result := harness.testTransaction(context.Background(), "some-tx", nil)
 
-		// Should have an error message because RPCClient is nil
 		assert.NotEmpty(t, result.ErrorMessage)
 		assert.Equal(t, "error", result.Status)
+		// Message should tell the user what to do.
+		if !strings.Contains(result.ErrorMessage, "RPC client") {
+			t.Errorf("error should mention RPC client, got: %q", result.ErrorMessage)
+		}
+	})
+
+	t.Run("returns error for empty transaction hash", func(t *testing.T) {
+		harness := NewRegressionHarness(&MockRunner{}, nil, 2)
+		result := harness.testTransaction(context.Background(), "", nil)
+		assert.Equal(t, "error", result.Status)
+		assert.NotEmpty(t, result.ErrorMessage)
 	})
 }
 
@@ -158,9 +206,7 @@ func TestExtractLedgerKeysFromXDR(t *testing.T) {
 		assert.Equal(t, 0, len(keys))
 	})
 
-	t.Run("returns empty slice for non-empty XDR", func(t *testing.T) {
-		// TODO: Implement full XDR parsing
-		// For now, returns empty as placeholder
+	t.Run("returns empty slice for non-empty XDR placeholder", func(t *testing.T) {
 		keys, err := extractLedgerKeysFromXDR("AAAAAgAA...")
 		assert.NoError(t, err)
 		assert.Equal(t, 0, len(keys))
@@ -173,7 +219,6 @@ func TestRegressionTestSuite_ConcurrentAddition(t *testing.T) {
 		Results:    make([]RegressionTestResult, 0, 100),
 	}
 
-	// Simulate concurrent additions
 	done := make(chan bool, 100)
 	for i := 0; i < 100; i++ {
 		go func(idx int) {
@@ -191,4 +236,21 @@ func TestRegressionTestSuite_ConcurrentAddition(t *testing.T) {
 	}
 
 	assert.Equal(t, 100, len(suite.Results))
+}
+
+// TestRegressionTestSuite_SummaryMentionsAllFields verifies the Summary string
+// mentions Total, Passed, Failed, Errors, and Success Rate.
+func TestRegressionTestSuite_SummaryMentionsAllFields(t *testing.T) {
+	suite := &RegressionTestSuite{
+		TotalTests:  5,
+		PassedTests: 4,
+		FailedTests: 1,
+		ErrorTests:  0,
+	}
+	s := suite.Summary()
+	for _, want := range []string{"Total", "Passed", "Failed", "Error", "%"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("Summary() missing %q; got: %q", want, s)
+		}
+	}
 }

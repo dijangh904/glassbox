@@ -394,15 +394,6 @@ Local WASM Replay Mode:
 			}
 		}
 
-		// Validate that --network and --compare-network are not the same.
-		if compareNetworkFlag != "" && networkFlag != "" &&
-			strings.EqualFold(compareNetworkFlag, networkFlag) {
-			return errors.WrapValidationError(fmt.Sprintf(
-				"--compare-network %q must differ from --network %q; choose two distinct networks",
-				compareNetworkFlag, networkFlag,
-			))
-		}
-
 		// Validate --watch-timeout is positive.
 		if watchFlag && watchTimeoutFlag <= 0 {
 			return errors.WrapValidationError(fmt.Sprintf(

@@ -6,6 +6,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/dotandev/glassbox/internal/errors"
@@ -20,11 +21,21 @@ var (
 	reportFile   string
 )
 
+// validReportFormats are the accepted --format values for the report command.
+var validReportFormats = map[string]bool{
+	"html":     true,
+	"pdf":      true,
+	"html,pdf": true,
+	"pdf,html": true,
+	"json":     true,
+	"text":     true,
+}
+
 var reportCmd = &cobra.Command{
 	Use:     "report",
 	GroupID: "utility",
 	Short:   "Generate debugging reports from traces",
-	Long: `Generate professional PDF or HTML reports from execution traces.
+	Long: `Generate HTML, PDF, JSON, or plain-text reports from execution traces.
 
 Reports include:
   - Executive summary with key findings
@@ -33,34 +44,91 @@ Reports include:
   - Risk assessment with detected issues
   - Timeline and event distribution
 
-Examples:
-  Glassbox report --file trace.json --format html --output reports/
-  Glassbox report --file trace.json --format pdf --output reports/
-  Glassbox report --file trace.json --format html,pdf --output reports/`,
-	RunE: reportExec,
+The --file flag is required and must point to a valid JSON trace file
+produced by 'glassbox debug' or 'glassbox trace'.
+
+The --format flag defaults to 'html'. Specify 'html,pdf' to produce both
+formats in a single pass.`,
+	Example: `  # Generate an HTML report (default)
+  glassbox report --file trace.json --output reports/
+
+  # Generate a PDF report
+  glassbox report --file trace.json --format pdf --output reports/
+
+  # Generate both HTML and PDF
+  glassbox report --file trace.json --format html,pdf --output reports/
+
+  # Generate a JSON report for programmatic consumption
+  glassbox report --file trace.json --format json --output reports/
+
+  # Generate a plain-text report for terminals or logs
+  glassbox report --file trace.json --format text`,
+	PreRunE: validateReportFlags,
+	RunE:    reportExec,
+}
+
+// validateReportFlags performs all flag validation before any I/O so
+// failures surface before the user waits for file reads.
+func validateReportFlags(cmd *cobra.Command, args []string) error {
+	if reportFile == "" {
+		return errors.WrapValidationError(
+			"--file is required; provide the path to a JSON trace file\n" +
+				"Usage: glassbox report --file <trace.json> [--format html|pdf|json|text]")
+	}
+
+	// Validate --format early so the user gets a clear error before any I/O.
+	normalized := strings.ToLower(strings.TrimSpace(reportFormat))
+	if !validReportFormats[normalized] {
+		valid := "html, pdf, html,pdf, json, text"
+		return errors.WrapValidationError(fmt.Sprintf(
+			"invalid --format %q; must be one of: %s", reportFormat, valid,
+		))
+	}
+
+	return nil
 }
 
 func reportExec(cmd *cobra.Command, args []string) error {
-	if reportFile == "" {
-		return errors.WrapCliArgumentRequired("file")
-	}
-
+	// Verify the trace file exists and is readable before doing anything else.
 	if _, statErr := os.Stat(reportFile); os.IsNotExist(statErr) {
-		return errors.WrapValidationError(fmt.Sprintf("trace file not found: %s", reportFile))
+		return errors.WrapValidationError(fmt.Sprintf(
+			"trace file not found: %q\n"+
+				"Provide a trace file exported with 'glassbox debug --json' or 'glassbox trace'",
+			reportFile,
+		))
 	}
 
 	if reportOutput == "" {
 		reportOutput = "."
 	}
 
+	// Ensure the output directory exists (or can be created).
+	if info, err := os.Stat(reportOutput); err == nil && !info.IsDir() {
+		return errors.WrapValidationError(fmt.Sprintf(
+			"--output %q exists but is not a directory; specify a directory path",
+			reportOutput,
+		))
+	}
+
 	traceData, err := os.ReadFile(reportFile)
 	if err != nil {
-		return errors.WrapValidationError(fmt.Sprintf("failed to read trace file: %v", err))
+		return errors.WrapValidationError(fmt.Sprintf("failed to read trace file %q: %v", reportFile, err))
+	}
+
+	if len(traceData) == 0 {
+		return errors.WrapValidationError(fmt.Sprintf(
+			"trace file %q is empty; the file must contain valid JSON trace data",
+			reportFile,
+		))
 	}
 
 	executionTrace, err := trace.FromJSON(traceData)
 	if err != nil {
-		return errors.WrapUnmarshalFailed(err, "trace")
+		return errors.WrapUnmarshalFailed(err, fmt.Sprintf(
+			"failed to parse trace file %q — ensure the file was produced by "+
+				"'glassbox debug --json' or 'glassbox trace'",
+			reportFile,
+		))
 	}
 
 	builder := report.NewBuilder("Execution Trace Report")
@@ -91,11 +159,11 @@ func reportExec(cmd *cobra.Command, args []string) error {
 
 	// Analyze for findings
 	if errorCount > 0 {
-		builder.AddKeyFinding(fmt.Sprintf("%d errors detected during execution", errorCount))
+		builder.AddKeyFinding(fmt.Sprintf("%d error(s) detected during execution", errorCount))
 	}
 
 	contractCount := countContracts(executionTrace.States)
-	builder.AddKeyFinding(fmt.Sprintf("%d unique contracts called", contractCount))
+	builder.AddKeyFinding(fmt.Sprintf("%d unique contract(s) called", contractCount))
 
 	// Risk assessment
 	riskLevel := assessRisk(executionTrace.States)
@@ -109,38 +177,46 @@ func reportExec(cmd *cobra.Command, args []string) error {
 
 	generatedReport := builder.Build()
 
-	exporter, err := report.NewExporter(reportOutput)
-	if err != nil {
-		return errors.WrapValidationError(fmt.Sprintf("failed to create exporter: %v", err))
-	}
-
+	// ── Diagnostic text / JSON formats ─────────────────────────────────────
 	diagnosticReport := report.NewDiagnosticReport(executionTrace)
-	if reportFormat == "text" {
+
+	normalized := strings.ToLower(strings.TrimSpace(reportFormat))
+	switch normalized {
+	case "text":
 		filename := reportOutput + "/report.txt"
 		if writeErr := os.WriteFile(filename, []byte(diagnosticReport.Text()), 0644); writeErr != nil {
-			return errors.WrapValidationError(fmt.Sprintf("failed to write text report: %v", writeErr))
+			return errors.WrapValidationError(fmt.Sprintf(
+				"failed to write text report to %q: %v", filename, writeErr,
+			))
 		}
-		fmt.Printf("[OK] Report generated: %s\n", filename)
+		fmt.Fprintf(cmd.OutOrStdout(), "[OK] Report generated: %s\n", filename)
 		return nil
-	}
 
-	if reportFormat == "json" {
+	case "json":
 		jsonData, marshalErr := diagnosticReport.JSON()
 		if marshalErr != nil {
 			return errors.WrapMarshalFailed(marshalErr)
 		}
-
 		filename := reportOutput + "/report.json"
 		if writeErr := os.WriteFile(filename, jsonData, 0644); writeErr != nil {
-			return errors.WrapValidationError(fmt.Sprintf("failed to write JSON report: %v", writeErr))
+			return errors.WrapValidationError(fmt.Sprintf(
+				"failed to write JSON report to %q: %v", filename, writeErr,
+			))
 		}
-
-		fmt.Printf("[OK] Report generated: %s\n", filename)
+		fmt.Fprintf(cmd.OutOrStdout(), "[OK] Report generated: %s\n", filename)
 		return nil
 	}
 
+	// ── HTML / PDF formats via exporter ───────────────────────────────────
+	exporter, err := report.NewExporter(reportOutput)
+	if err != nil {
+		return errors.WrapValidationError(fmt.Sprintf(
+			"failed to create report exporter for output directory %q: %v", reportOutput, err,
+		))
+	}
+
 	var formats []string
-	switch reportFormat {
+	switch normalized {
 	case "html":
 		formats = []string{"html"}
 	case "pdf":
@@ -148,16 +224,20 @@ func reportExec(cmd *cobra.Command, args []string) error {
 	case "html,pdf", "pdf,html":
 		formats = []string{"html", "pdf"}
 	default:
-		formats = []string{"html"}
+		formats = []string{"html"} // safe fallback (already validated above)
 	}
 
-	results, err := exporter.ExportMultiple(generatedReport, formats)
-	if err != nil {
-		return errors.WrapValidationError(fmt.Sprintf("failed to export report: %v", err))
+	results, exportErr := exporter.ExportMultiple(generatedReport, formats)
+	if exportErr != nil {
+		return errors.WrapValidationError(fmt.Sprintf(
+			"report export failed: %v\n"+
+				"Ensure the output directory is writable and try again",
+			exportErr,
+		))
 	}
 
 	for format, path := range results {
-		fmt.Printf("[OK] %s report generated: %s\n", string(format), path)
+		fmt.Fprintf(cmd.OutOrStdout(), "[OK] %s report generated: %s\n", strings.ToUpper(string(format)), path)
 	}
 
 	return nil
@@ -225,7 +305,7 @@ func calculateRiskScore(states []trace.ExecutionState) float64 {
 func init() {
 	reportCmd.Flags().StringVar(&reportFormat, "format", "html", "Output format: text, json, html, pdf, or html,pdf")
 	reportCmd.Flags().StringVar(&reportOutput, "output", ".", "Output directory for reports")
-	reportCmd.Flags().StringVar(&reportFile, "file", "", "Trace file to analyze")
+	reportCmd.Flags().StringVar(&reportFile, "file", "", "JSON trace file to analyze (required)")
 
 	_ = reportCmd.RegisterFlagCompletionFunc("format", completeReportFormatFlag)
 

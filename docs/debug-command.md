@@ -42,6 +42,8 @@ glassbox debug --load-snapshots <registry-file>
 --network and --compare-network must be different networks; both are "testnet"
 ```
 
+**Version and metadata:** The binary version, commit SHA, build date, and User-Agent string are surfaced by `glassbox version`. Use `glassbox version --json` for machine-readable output suitable for CI pipelines. When the binary was not built with `-ldflags` version injection (e.g. `go run ./...`), the version field shows `0.0.0-dev` and a `(dev build)` warning is displayed.
+
 ---
 
 ## Validation & Dry-Run

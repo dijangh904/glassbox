@@ -13,7 +13,7 @@ import (
 	"github.com/dotandev/glassbox/internal/rpc"
 )
 
-// RegressionTestResult represents the outcome of a single transaction test
+// RegressionTestResult represents the outcome of a single transaction test.
 type RegressionTestResult struct {
 	TransactionHash string
 	Status          string // "pass", "fail", "error"
@@ -24,7 +24,7 @@ type RegressionTestResult struct {
 	TrapsMatch      bool
 }
 
-// RegressionTestSuite holds results from a batch of regression tests
+// RegressionTestSuite holds results from a batch of regression tests.
 type RegressionTestSuite struct {
 	TotalTests  int
 	PassedTests int
@@ -34,7 +34,7 @@ type RegressionTestSuite struct {
 	mu          sync.Mutex
 }
 
-// RegressionHarness manages protocol regression testing against historic transactions
+// RegressionHarness manages protocol regression testing against historic transactions.
 type RegressionHarness struct {
 	Runner     RunnerInterface
 	RPCClient  *rpc.Client
@@ -42,7 +42,8 @@ type RegressionHarness struct {
 	Verbose    bool
 }
 
-// NewRegressionHarness creates a new regression test harness
+// NewRegressionHarness creates a new regression test harness.
+// maxWorkers defaults to 4 when <= 0.
 func NewRegressionHarness(runner RunnerInterface, client *rpc.Client, maxWorkers int) *RegressionHarness {
 	if maxWorkers <= 0 {
 		maxWorkers = 4
@@ -55,9 +56,9 @@ func NewRegressionHarness(runner RunnerInterface, client *rpc.Client, maxWorkers
 	}
 }
 
-// RunRegressionTests fetches and tests historic failed transactions
-// This downloads up to `count` historic failed transactions and verifies
-// that glassbox-sim produces identical results to the original execution
+// RunRegressionTests fetches and tests historic failed transactions.
+// Returns an error with a descriptive message when count is invalid, the
+// runner is nil, or no transactions are found for the given parameters.
 func (h *RegressionHarness) RunRegressionTests(
 	ctx context.Context,
 	count int,
@@ -65,19 +66,38 @@ func (h *RegressionHarness) RunRegressionTests(
 	startSeq uint32,
 ) (*RegressionTestSuite, error) {
 	if count <= 0 {
-		return nil, fmt.Errorf("count must be greater than 0")
+		return nil, fmt.Errorf(
+			"--count must be greater than 0 (got %d); "+
+				"specify how many historic failed transactions to test",
+			count,
+		)
+	}
+	if h.Runner == nil {
+		return nil, fmt.Errorf(
+			"regression harness has no simulator runner; "+
+				"call NewRegressionHarness with a valid RunnerInterface",
+		)
 	}
 
-	// Fetch failed transaction hashes from mainnet
 	logger.Logger.Info("Fetching historic failed transactions", "count", count)
 
 	txHashes, err := h.fetchFailedTransactions(ctx, count, startSeq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch transaction hashes: %w", err)
+		return nil, fmt.Errorf(
+			"failed to fetch transaction hashes: %w\n"+
+				"Check your --rpc-url and --network settings, or run "+
+				"'glassbox doctor' to verify network connectivity",
+			err,
+		)
 	}
 
 	if len(txHashes) == 0 {
-		return nil, fmt.Errorf("no failed transactions found")
+		return nil, fmt.Errorf(
+			"no failed transactions found (count=%d, startSeq=%d)\n"+
+				"Try adjusting --start-seq to an earlier ledger, or verify that the "+
+				"selected network has recent failed transactions",
+			count, startSeq,
+		)
 	}
 
 	logger.Logger.Info("Found transactions to test", "count", len(txHashes))
@@ -96,8 +116,8 @@ func (h *RegressionHarness) RunRegressionTests(
 		wg.Add(1)
 		go func(hash string) {
 			defer wg.Done()
-			sem <- struct{}{}        // Acquire semaphore
-			defer func() { <-sem }() // Release semaphore
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
 			result := h.testTransaction(ctx, hash, protocolVersion)
 			suite.addResult(result)
@@ -131,7 +151,9 @@ func (h *RegressionHarness) RunRegressionTests(
 	return suite, nil
 }
 
-// testTransaction runs a single transaction through the simulator and verifies results
+// testTransaction runs a single transaction through the simulator and verifies results.
+// All error paths return an RegressionTestResult with Status="error" and a
+// descriptive ErrorMessage rather than panicking.
 func (h *RegressionHarness) testTransaction(
 	ctx context.Context,
 	txHash string,
@@ -142,30 +164,38 @@ func (h *RegressionHarness) testTransaction(
 		Status:          "error",
 	}
 
-	// Check if RPCClient is available
 	if h.RPCClient == nil {
-		result.ErrorMessage = "RPC client not configured"
+		result.ErrorMessage = "RPC client not configured; provide an RPC client to the harness"
+		return result
+	}
+
+	if txHash == "" {
+		result.ErrorMessage = "transaction hash is empty; skip this entry"
 		return result
 	}
 
 	// Fetch transaction details
 	resp, err := h.RPCClient.GetTransaction(ctx, txHash)
 	if err != nil {
-		result.ErrorMessage = fmt.Sprintf("failed to fetch transaction: %v", err)
+		result.ErrorMessage = fmt.Sprintf(
+			"failed to fetch transaction %s: %v\n"+
+				"Verify the hash is correct and the RPC endpoint is reachable",
+			txHash, err,
+		)
 		return result
 	}
 
 	// Extract ledger entries
 	keys, err := extractLedgerKeysFromXDR(resp.ResultMetaXdr)
 	if err != nil {
-		result.ErrorMessage = fmt.Sprintf("failed to extract ledger keys: %v", err)
+		result.ErrorMessage = fmt.Sprintf("failed to extract ledger keys from XDR for %s: %v", txHash, err)
 		return result
 	}
 
 	// Fetch ledger entries from network
 	ledgerEntries, err := h.RPCClient.GetLedgerEntries(ctx, keys)
 	if err != nil {
-		result.ErrorMessage = fmt.Sprintf("failed to fetch ledger entries: %v", err)
+		result.ErrorMessage = fmt.Sprintf("failed to fetch ledger entries for %s: %v", txHash, err)
 		return result
 	}
 
@@ -180,7 +210,11 @@ func (h *RegressionHarness) testTransaction(
 	// Run simulation
 	simResp, err := h.Runner.Run(ctx, simReq)
 	if err != nil {
-		result.ErrorMessage = fmt.Sprintf("simulation failed: %v", err)
+		result.ErrorMessage = fmt.Sprintf(
+			"simulation failed for %s: %v\n"+
+				"Run 'glassbox debug %s' for a detailed trace",
+			txHash, err, txHash,
+		)
 		return result
 	}
 
@@ -191,9 +225,7 @@ func (h *RegressionHarness) testTransaction(
 		result.EventCount = len(simResp.Events)
 	}
 
-	// Try to extract expected event count from result meta
-	// This is a simplified check - in production you'd parse the XDR fully
-	result.ExpectedCount = result.EventCount // For now, assume match if simulation succeeded
+	result.ExpectedCount = result.EventCount // simplified check
 
 	// Verify results
 	switch simResp.Status {
@@ -202,7 +234,7 @@ func (h *RegressionHarness) testTransaction(
 		result.TrapsMatch = true
 		result.EventCountMatch = true
 	case "error":
-		// Transaction failed in simulation, which is expected for failed txs
+		// Transaction failed in simulation — expected for historic failed txs
 		result.Status = "pass"
 		result.TrapsMatch = true
 		result.EventCountMatch = true
@@ -210,14 +242,17 @@ func (h *RegressionHarness) testTransaction(
 	default:
 		result.Status = "fail"
 		result.TrapsMatch = false
-		result.ErrorMessage = "unexpected simulation status: " + simResp.Status
+		result.ErrorMessage = fmt.Sprintf(
+			"unexpected simulation status %q for %s; expected 'success' or 'error'",
+			simResp.Status, txHash,
+		)
 	}
 
 	return result
 }
 
-// fetchFailedTransactions retrieves hashes of failed transactions from mainnet
-// Uses ledger sequence as a starting point for the search
+// fetchFailedTransactions retrieves hashes of failed transactions from mainnet.
+// Uses ledger sequence as a starting point for the search.
 func (h *RegressionHarness) fetchFailedTransactions(
 	ctx context.Context,
 	count int,
@@ -225,44 +260,40 @@ func (h *RegressionHarness) fetchFailedTransactions(
 ) ([]string, error) {
 	txHashes := make([]string, 0, count)
 
-	// Strategy: Walk backwards from recent ledgers looking for failed transactions
-	// In production, you'd use more sophisticated querying (e.g., Horizon transactions endpoint)
-	// For now, we'll simulate fetching by using a known set of test transactions
-
-	// This is a placeholder implementation
-	// In production, integrate with Horizon's transactions endpoint:
-	// GET /transactions?limit=200&order=desc&include_failed=true
 	logger.Logger.Info(
 		"Fetching failed transactions from Horizon",
 		"count", count,
 		"startSeq", startSeq,
 	)
 
-	// Placeholder: would fetch from proper RPC endpoint
-	// For now return empty to prevent errors in testing
+	// Placeholder: in production integrate with Horizon's transactions endpoint:
+	// GET /transactions?limit=200&order=desc&include_failed=true
+	// For now return empty slice — tests that require specific tx hashes
+	// should inject them via the RunFunc on a MockRunner.
 	return txHashes, nil
 }
 
-// extractLedgerKeysFromXDR extracts ledger keys from transaction result meta XDR
+// extractLedgerKeysFromXDR extracts ledger keys from transaction result meta XDR.
 func extractLedgerKeysFromXDR(resultMetaXdr string) ([]string, error) {
 	if resultMetaXdr == "" {
 		return []string{}, nil
 	}
-
-	// TODO: Parse XDR to extract actual ledger keys
-	// For now, return empty slice - actual parsing requires XDR decoder
+	// TODO: Parse XDR to extract actual ledger keys.
 	return []string{}, nil
 }
 
-// addResult adds a test result to the suite (thread-safe)
+// addResult adds a test result to the suite (thread-safe).
 func (suite *RegressionTestSuite) addResult(result RegressionTestResult) {
 	suite.mu.Lock()
 	defer suite.mu.Unlock()
 	suite.Results = append(suite.Results, result)
 }
 
-// Summary returns a formatted summary of the test suite results
+// Summary returns a formatted summary of the test suite results.
 func (suite *RegressionTestSuite) Summary() string {
+	if suite.TotalTests == 0 {
+		return "Regression Test Summary:\n  No tests were executed."
+	}
 	return fmt.Sprintf(
 		"Regression Test Summary:\n"+
 			"  Total Tests: %d\n"+
@@ -278,7 +309,7 @@ func (suite *RegressionTestSuite) Summary() string {
 	)
 }
 
-// FailedResults returns only the failed test results
+// FailedResults returns only the failed and error test results.
 func (suite *RegressionTestSuite) FailedResults() []RegressionTestResult {
 	suite.mu.Lock()
 	defer suite.mu.Unlock()

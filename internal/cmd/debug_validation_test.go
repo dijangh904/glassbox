@@ -35,8 +35,8 @@ func TestDebugPreRunE_CompareNetworkSameAsNetwork(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when --compare-network equals --network")
 	}
-	if !strings.Contains(err.Error(), "must differ") {
-		t.Errorf("expected 'must differ' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "must be different") {
+		t.Errorf("expected 'must be different' in error, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "testnet") {
 		t.Errorf("expected network name in error, got: %v", err)

@@ -5,7 +5,9 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
+	"github.com/dotandev/glassbox/internal/errors"
 	"github.com/dotandev/glassbox/internal/rpc"
 	"github.com/dotandev/glassbox/internal/simulator"
 	"github.com/spf13/cobra"
@@ -17,6 +19,10 @@ var (
 	regressionStartSeq        uint32
 	regressionMaxWorkers      int
 )
+
+// maxRegressionCount is the upper bound accepted by --count to prevent
+// accidental large RPC batches.
+const maxRegressionCount = 1000
 
 var regressionTestCmd = &cobra.Command{
 	Use:     "regression-test",
@@ -31,33 +37,87 @@ traps and events as the original network execution.
 
 The tests help ensure that protocol changes don't introduce regressions.
 
-Example:
-  Glassbox regression-test --count 100
-  Glassbox regression-test --count 1000 --workers 8
-  Glassbox regression-test --count 500 --network mainnet --protocol-version 22`,
-	RunE: runRegressionTest,
+Validation:
+  --count must be between 1 and 1000 (inclusive).
+  --workers must be a positive integer (defaults to 4).
+  --protocol-version is optional; when provided it must be a supported version.
+  --network must be one of: testnet, mainnet, futurenet.`,
+	Example: `  # Run 100 regression tests on mainnet (default)
+  glassbox regression-test --count 100
+
+  # Use more parallel workers for faster runs
+  glassbox regression-test --count 1000 --workers 8
+
+  # Test against a specific protocol version
+  glassbox regression-test --count 500 --network mainnet --protocol-version 22
+
+  # Verbose output shows per-transaction progress
+  glassbox regression-test --count 50 --verbose`,
+	PreRunE: validateRegressionFlags,
+	RunE:    runRegressionTest,
+}
+
+// validateRegressionFlags runs early validation so issues are surfaced before
+// any network or simulator calls are made.
+func validateRegressionFlags(cmd *cobra.Command, args []string) error {
+	if regressionTestCount <= 0 {
+		return errors.WrapValidationError(fmt.Sprintf(
+			"--count must be greater than 0 (got %d); specify the number of "+
+				"historic failed transactions to test",
+			regressionTestCount,
+		))
+	}
+	if regressionTestCount > maxRegressionCount {
+		return errors.WrapValidationError(fmt.Sprintf(
+			"--count %d exceeds the maximum of %d; reduce --count to avoid "+
+				"large RPC batch requests",
+			regressionTestCount, maxRegressionCount,
+		))
+	}
+
+	if regressionMaxWorkers < 0 {
+		return errors.WrapValidationError(fmt.Sprintf(
+			"--workers must be a positive integer (got %d)", regressionMaxWorkers,
+		))
+	}
+
+	// Validate --network early before creating any client.
+	if err := validateNetworkName(networkFlag); err != nil {
+		return errors.WrapValidationError(fmt.Sprintf(
+			"invalid --network %q; must be one of: testnet, mainnet, futurenet\n"+
+				"Use 'glassbox regression-test --help' for all available flags",
+			networkFlag,
+		))
+	}
+
+	// Validate --protocol-version when explicitly provided.
+	if regressionProtocolVersion > 0 {
+		if err := simulator.Validate(regressionProtocolVersion); err != nil {
+			return errors.WrapValidationError(fmt.Sprintf(
+				"invalid --protocol-version %d: %v\n"+
+					"Run 'glassbox version' to see the protocol versions supported by "+
+					"this build",
+				regressionProtocolVersion, err,
+			))
+		}
+	}
+
+	return nil
 }
 
 func runRegressionTest(cmd *cobra.Command, args []string) error {
-	if regressionTestCount <= 0 {
-		return fmt.Errorf("--count must be greater than 0")
-	}
-
 	if regressionMaxWorkers <= 0 {
 		regressionMaxWorkers = 4
 	}
 
-	fmt.Printf("Starting regression test suite\n")
-	fmt.Printf("  Target count: %d transactions\n", regressionTestCount)
-	fmt.Printf("  Network: %s\n", networkFlag)
-	fmt.Printf("  Workers: %d\n", regressionMaxWorkers)
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Starting regression test suite\n")
+	fmt.Fprintf(out, "  Target count:   %d transactions\n", regressionTestCount)
+	fmt.Fprintf(out, "  Network:        %s\n", networkFlag)
+	fmt.Fprintf(out, "  Workers:        %d\n", regressionMaxWorkers)
 
 	if regressionProtocolVersion > 0 {
-		// Validate protocol version
-		if err := simulator.Validate(regressionProtocolVersion); err != nil {
-			return fmt.Errorf("invalid protocol version: %w", err)
-		}
-		fmt.Printf("  Protocol version override: %d\n", regressionProtocolVersion)
+		fmt.Fprintf(out, "  Protocol ver.:  %d\n", regressionProtocolVersion)
 	}
 
 	// Create RPC client
@@ -71,13 +131,22 @@ func runRegressionTest(cmd *cobra.Command, args []string) error {
 
 	client, err := rpc.NewClient(opts...)
 	if err != nil {
-		return fmt.Errorf("failed to create RPC client: %w", err)
+		return errors.WrapValidationError(fmt.Sprintf(
+			"failed to create RPC client for network %q: %v\n"+
+				"Check your --network and --rpc-url flags, and ensure the RPC "+
+				"endpoint is reachable",
+			networkFlag, err,
+		))
 	}
 
 	// Create simulator runner
 	runner, err := simulator.NewRunner("", false)
 	if err != nil {
-		return fmt.Errorf("failed to initialize simulator: %w", err)
+		return errors.WrapSimulatorNotFound(fmt.Sprintf(
+			"failed to initialize simulator: %v\n"+
+				"Run 'glassbox doctor --fix' to install or repair the simulator binary",
+			err,
+		))
 	}
 
 	// Create regression harness
@@ -94,28 +163,42 @@ func runRegressionTest(cmd *cobra.Command, args []string) error {
 
 	suite, err := harness.RunRegressionTests(ctx, regressionTestCount, protVersion, regressionStartSeq)
 	if err != nil {
-		return fmt.Errorf("regression tests failed: %w", err)
+		// Surface a clear message with remediation guidance.
+		errMsg := err.Error()
+		hint := ""
+		switch {
+		case strings.Contains(errMsg, "no failed transactions found"):
+			hint = "\nTip: try a different --start-seq value or verify the network has recent failed transactions."
+		case strings.Contains(errMsg, "fetch transaction hashes"):
+			hint = "\nTip: check your --rpc-url and --network settings, or run 'glassbox doctor' to verify connectivity."
+		}
+		return errors.WrapValidationError(fmt.Sprintf("regression tests failed: %v%s", err, hint))
 	}
 
 	// Print summary
-	fmt.Println("\n" + suite.Summary())
+	fmt.Fprintln(out, "\n"+suite.Summary())
 
 	// Print failed results if any
 	failed := suite.FailedResults()
 	if len(failed) > 0 {
-		fmt.Printf("\n%d test(s) failed:\n", len(failed))
+		fmt.Fprintf(out, "\n%d test(s) failed:\n", len(failed))
+		const maxDisplayed = 10
 		for i, result := range failed {
-			if i < 10 { // Show first 10 failures
-				fmt.Printf("  [%d] %s: %s\n", i+1, result.TransactionHash, result.ErrorMessage)
+			if i >= maxDisplayed {
+				fmt.Fprintf(out, "  ... and %d more failures (re-run with --verbose for full output)\n",
+					len(failed)-maxDisplayed)
+				break
 			}
+			fmt.Fprintf(out, "  [%d] %s\n      Error: %s\n", i+1, result.TransactionHash, result.ErrorMessage)
 		}
-		if len(failed) > 10 {
-			fmt.Printf("  ... and %d more failures\n", len(failed)-10)
-		}
-		return fmt.Errorf("regression test failed with %d failures", len(failed))
+		return errors.WrapValidationError(fmt.Sprintf(
+			"regression test completed with %d failure(s) out of %d tests\n"+
+				"Run 'glassbox debug <tx-hash>' on any failing transaction for a detailed trace",
+			len(failed), suite.TotalTests,
+		))
 	}
 
-	fmt.Println("\nAll regression tests passed!")
+	fmt.Fprintln(out, "\nAll regression tests passed!")
 	return nil
 }
 
@@ -124,28 +207,28 @@ func init() {
 		&regressionTestCount,
 		"count",
 		100,
-		"Number of historic failed transactions to test (max 1000)",
+		fmt.Sprintf("Number of historic failed transactions to test (1–%d)", maxRegressionCount),
 	)
 
 	regressionTestCmd.Flags().Uint32Var(
 		&regressionStartSeq,
 		"start-seq",
 		0,
-		"Starting ledger sequence number for fetching transactions",
+		"Starting ledger sequence number for fetching transactions (0 = most recent)",
 	)
 
 	regressionTestCmd.Flags().IntVar(
 		&regressionMaxWorkers,
 		"workers",
 		4,
-		"Number of parallel workers for testing",
+		"Number of parallel workers for testing (default: 4)",
 	)
 
 	regressionTestCmd.Flags().Uint32Var(
 		&regressionProtocolVersion,
 		"protocol-version",
 		0,
-		"Optional protocol version override for all tests",
+		"Optional protocol version override for all tests (0 = use default)",
 	)
 
 	regressionTestCmd.Flags().StringVarP(
@@ -153,21 +236,21 @@ func init() {
 		"network",
 		"n",
 		string(rpc.Mainnet),
-		"Stellar network to fetch transactions from (mainnet, testnet, futurenet)",
+		"Stellar network to fetch transactions from (testnet, mainnet, futurenet)",
 	)
 
 	regressionTestCmd.Flags().StringVar(
 		&rpcURLFlag,
 		"rpc-url",
 		"",
-		"Custom RPC URL",
+		"Custom RPC URL (overrides the default for the selected network)",
 	)
 
 	regressionTestCmd.Flags().StringVar(
 		&rpcTokenFlag,
 		"rpc-token",
 		"",
-		"RPC authentication token",
+		"RPC authentication token (or set GLASSBOX_RPC_TOKEN)",
 	)
 
 	regressionTestCmd.Flags().BoolVarP(
@@ -175,7 +258,7 @@ func init() {
 		"verbose",
 		"v",
 		false,
-		"Enable verbose output",
+		"Enable verbose per-transaction progress output",
 	)
 
 	rootCmd.AddCommand(regressionTestCmd)
