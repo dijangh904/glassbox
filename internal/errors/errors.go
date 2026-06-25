@@ -81,6 +81,9 @@ var (
 	ErrShellExit              = stdliberrors.New("exit")
 	ErrRegistryConflict       = stdliberrors.New("protocol registry conflict detected")
 	ErrLedgerSequenceMismatch = stdliberrors.New("ledger sequence mismatch")
+	// ErrSourceDiscoveryFailed is returned when source discovery for a contract
+	// fails and no fallback path is available or all fallback stages were exhausted.
+	ErrSourceDiscoveryFailed = stdliberrors.New("source discovery failed")
 )
 
 type LedgerNotFoundError struct {
@@ -375,6 +378,25 @@ func WrapRPCRequestTooLarge(sizeBytes int64, maxSizeBytes int64) error {
 
 func WrapMissingLedgerKey(key string) error {
 	return &MissingLedgerKeyError{Key: key}
+}
+
+// WrapSourceDiscoveryFailed returns an actionable error when all source
+// discovery stages (registry, GitHub, override, prompt) are exhausted and
+// no source mapping can be provided. The message includes the contract ID
+// and a remediation hint so users know how to proceed.
+func WrapSourceDiscoveryFailed(contractID string, hint string) error {
+	msg := fmt.Sprintf("source discovery failed for contract %q", contractID)
+	h := hint
+	if h == "" {
+		h = "Provide the contract source directory with --contract-source <path>, " +
+			"or recompile with 'debug = true' in [profile.release] for DWARF symbols. " +
+			"Run 'glassbox doctor' for a full environment check."
+	}
+	return &ErstError{
+		Code:    ErstSourceDiscoveryFailed,
+		Message: msg,
+		Hint:    h,
+	}
 }
 
 // LedgerSequenceMismatchError is returned when a transaction's referenced

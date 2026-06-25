@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -169,6 +170,56 @@ func runDebugDryRun(cmd *cobra.Command, txHash string) error {
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Additional environment checks:\n")
 	
+	// Source discovery pre-flight: validate --contract-source when set.
+	if contractSourceFlag != "" {
+		info, statErr := os.Stat(contractSourceFlag)
+		if statErr != nil {
+			if os.IsNotExist(statErr) {
+				failures = append(failures, fmt.Sprintf("contract-source: directory not found: %q", contractSourceFlag))
+				fmt.Fprintf(errOut, "[FAIL] --contract-source directory not found: %q\n"+
+					"       Fix: provide the path to your contract source directory (the one containing src/)\n"+
+					"       Example: --contract-source ./contracts/my_contract/src\n", contractSourceFlag)
+			} else {
+				failures = append(failures, fmt.Sprintf("contract-source: cannot access %q: %v", contractSourceFlag, statErr))
+				fmt.Fprintf(errOut, "[FAIL] --contract-source: cannot access %q: %v\n"+
+					"       Fix: check file permissions\n", contractSourceFlag, statErr)
+			}
+		} else if !info.IsDir() {
+			failures = append(failures, fmt.Sprintf("contract-source: %q is a file, not a directory", contractSourceFlag))
+			fmt.Fprintf(errOut, "[FAIL] --contract-source: %q is a file, not a directory\n"+
+				"       Fix: provide the path to a directory, not a file\n", contractSourceFlag)
+		} else {
+			fmt.Fprintf(out, "[OK]   Source directory: %s\n", contractSourceFlag)
+		}
+	}
+
+	// Source alias pre-flight: validate JSON when --source-alias is set.
+	if sourceAliasFlag != "" {
+		aliasBytes, readErr := os.ReadFile(sourceAliasFlag)
+		if readErr != nil {
+			failures = append(failures, fmt.Sprintf("source-alias: cannot read %q: %v", sourceAliasFlag, readErr))
+			fmt.Fprintf(errOut, "[FAIL] --source-alias: cannot read %q: %v\n"+
+				"       Fix: ensure the file exists and is readable\n", sourceAliasFlag, readErr)
+		} else {
+			var aliasMap map[string]string
+			if jsonErr := json.Unmarshal(aliasBytes, &aliasMap); jsonErr != nil {
+				failures = append(failures, fmt.Sprintf("source-alias: invalid JSON in %q: %v", sourceAliasFlag, jsonErr))
+				fmt.Fprintf(errOut, "[FAIL] --source-alias: failed to parse %q as JSON: %v\n"+
+					"       Fix: ensure the file is a flat JSON object\n"+
+					"       Example: {\"my_crate\": \"/path/to/my_crate/src\"}\n", sourceAliasFlag, jsonErr)
+			} else {
+				fmt.Fprintf(out, "[OK]   Source alias file: %s (%d mapping(s))\n", sourceAliasFlag, len(aliasMap))
+				// Warn about alias targets that don't exist.
+				for alias, target := range aliasMap {
+					if _, targetErr := os.Stat(target); targetErr != nil {
+						fmt.Fprintf(errOut, "       Warning: source-alias target for %q does not exist: %q\n",
+							alias, target)
+					}
+				}
+			}
+		}
+	}
+
 	// Check for protocol version compatibility
 	if protocolVersionFlag != 0 {
 		if err := validateProtocolVersion(protocolVersionFlag); err != nil {

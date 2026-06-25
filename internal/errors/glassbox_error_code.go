@@ -33,6 +33,8 @@ const (
 	// Auth
 	ErstTransactionNotFound ErstErrorCode = "TRANSACTION_NOT_FOUND"
 	ErstUnauthorized        ErstErrorCode = "UNAUTHORIZED"
+	// Source discovery
+	ErstSourceDiscoveryFailed ErstErrorCode = "SOURCE_DISCOVERY_FAILED"
 )
 
 // ErstError wraps an error with a standardized code and preserves the original error string.
@@ -105,6 +107,7 @@ var errorCodeRegistry = map[error]ErstErrorCode{
 	ErrRateLimitExceeded:    ErstRateLimitExceeded,
 	ErrConfigFailed:         ErstConfigFailed,
 	ErrNetworkNotFound:      ErstNetworkNotFound,
+	ErrSourceDiscoveryFailed: ErstSourceDiscoveryFailed,
 }
 
 // ClassifyError maps an error to an ErstError with a code and preserves the original error string.

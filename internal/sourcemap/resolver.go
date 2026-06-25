@@ -6,8 +6,6 @@ package sourcemap
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,7 +28,16 @@ type Resolver struct {
 	// aliasResolver translates workspace-relative path prefixes to real
 	// filesystem paths before source files are opened.
 	aliasResolver *AliasResolver
+	// nonInteractive disables the stdin prompt so Resolve never blocks in CI
+	// pipelines or automated environments. When true and all automatic stages
+	// fail, Resolve returns ErrSourceNotFound instead of reading from stdin.
+	nonInteractive bool
 }
+
+// ErrSourceNotFound is a sentinel returned by Resolve when all discovery
+// stages are exhausted and no interactive prompt is available (e.g. CI mode).
+// Callers should check for it with errors.Is and surface a diagnostic.
+var ErrSourceNotFound = fmt.Errorf("contract source not found: all discovery stages exhausted")
 
 // ResolverOption is a functional option for configuring the Resolver.
 type ResolverOption func(*Resolver)
@@ -71,6 +78,16 @@ func WithAliasResolver(ar *AliasResolver) ResolverOption {
 	}
 }
 
+// WithNonInteractive disables the stdin prompt so Resolve never blocks
+// waiting for user input. Use this in CI pipelines and automated environments.
+// When all discovery stages fail in non-interactive mode, Resolve returns
+// ErrSourceNotFound instead of prompting.
+func WithNonInteractive() ResolverOption {
+	return func(r *Resolver) {
+		r.nonInteractive = true
+	}
+}
+
 // NewResolver creates a Resolver with the given options.
 func NewResolver(opts ...ResolverOption) *Resolver {
 	r := &Resolver{
@@ -82,15 +99,28 @@ func NewResolver(opts ...ResolverOption) *Resolver {
 	return r
 }
 
-// Resolve attempts to find verified source code for the given contract ID.
-// It checks the local cache first, then queries the registry.
-// If both fail, it prompts the user for a manual WASM path (Issue #372).
+// Resolve attempts to find verified source code for the given contract ID
+// through a multi-stage discovery pipeline:
+//
+//  1. Local cache
+//  2. Registry (stellar.expert)
+//  3. GitHub retriever (when configured)
+//  4. --contract-source override (Issue #117)
+//  5. Interactive stdin prompt — or ErrSourceNotFound in non-interactive mode
+//
+// Failure modes:
+//   - Invalid contractID: returns a validation error immediately.
+//   - All stages exhausted, non-interactive mode: returns ErrSourceNotFound.
+//   - Prompt read failure (interactive): returns a wrapped I/O error.
+//   - Returns (nil, nil) only when the user provides an empty path at the
+//     interactive prompt (explicit opt-out of source mapping).
 func (r *Resolver) Resolve(ctx context.Context, contractID string) (*SourceCode, error) {
 	if err := validateContractID(contractID); err != nil {
-		return nil, fmt.Errorf("invalid contract ID: %w", err)
+		return nil, fmt.Errorf("invalid contract ID %q: %w\n"+
+			"  Contract IDs must start with 'C' and be exactly 56 characters long.", contractID, err)
 	}
 
-	// 1. Check cache first
+	// 1. Check cache first.
 	if r.cache != nil {
 		if cached := r.cache.Get(contractID); cached != nil {
 			logger.Logger.Info("Source resolved from cache", "contract_id", contractID)
@@ -98,14 +128,13 @@ func (r *Resolver) Resolve(ctx context.Context, contractID string) (*SourceCode,
 		}
 	}
 
-	// 2. Fetch from registry
+	// 2. Fetch from registry.
 	source, err := r.registry.FetchVerifiedSource(ctx, contractID)
 	if err != nil {
-		// Log the error but continue to fallback
 		logger.Logger.Debug("Registry lookup failed", "contract_id", contractID, "error", err)
 	}
 
-	// 3. GitHub fallback: download from configured repository when registry returns nothing.
+	// 3. GitHub fallback.
 	if source == nil && r.githubRetriever != nil {
 		ghSource, ghErr := r.githubRetriever.Retrieve(ctx, contractID)
 		if ghErr != nil {
@@ -117,12 +146,40 @@ func (r *Resolver) Resolve(ctx context.Context, contractID string) (*SourceCode,
 				"repository", ghSource.Repository,
 				"file_count", len(ghSource.Files),
 			)
+			if r.cache != nil {
+				if cacheErr := r.cache.Put(ghSource); cacheErr != nil {
+					logger.Logger.Warn("Failed to cache GitHub source",
+						"contract_id", contractID, "error", cacheErr)
+				}
+			}
 			return ghSource, nil
 		}
 	}
 
-	// 4. Fallback: use explicit override path if provided (Issue #117)
+	// 4. Fallback: use explicit override path if provided (Issue #117).
+	//    Validate it here so callers get actionable errors rather than a
+	//    silent no-op if the path is wrong.
 	if source == nil && r.contractSourceOverride != "" {
+		info, statErr := os.Stat(r.contractSourceOverride)
+		if statErr != nil {
+			if os.IsNotExist(statErr) {
+				return nil, fmt.Errorf(
+					"--contract-source: directory not found: %q\n"+
+						"  Provide the path to your contract's source directory (the one containing src/).\n"+
+						"  Source mapping will be unavailable without a valid path.",
+					r.contractSourceOverride,
+				)
+			}
+			return nil, fmt.Errorf(
+				"--contract-source: cannot access %q: %w", r.contractSourceOverride, statErr)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf(
+				"--contract-source: %q is a file, not a directory\n"+
+					"  Provide the path to your contract's source directory, not a file.",
+				r.contractSourceOverride,
+			)
+		}
 		logger.Logger.Info("Using --contract-source override for source mapping",
 			"contract_id", contractID,
 			"path", r.contractSourceOverride,
@@ -135,28 +192,42 @@ func (r *Resolver) Resolve(ctx context.Context, contractID string) (*SourceCode,
 		}, nil
 	}
 
-	// 5. Fallback: Prompt user if source is unresolved (Issue #372)
+	// 5. Prompt or non-interactive failure.
 	if source == nil {
-		logger.Logger.Info("Contract source unresolved automatically", "contract_id", contractID)
-
-		manualPath, err := r.PromptForWasmPath()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get manual WASM path: %w", err)
+		if r.nonInteractive {
+			logger.Logger.Warn("Source discovery exhausted all stages (non-interactive mode)",
+				"contract_id", contractID)
+			return nil, fmt.Errorf(
+				"%w for contract %q\n"+
+					"  Stages tried: cache, registry (stellar.expert), GitHub retriever, --contract-source override\n"+
+					"  To resolve: provide --contract-source <path> pointing to the contract source directory,\n"+
+					"  or verify the contract on stellar.expert to enable registry lookup.\n"+
+					"  Use --skip-source-mapping to proceed without source mapping.",
+				ErrSourceNotFound, contractID,
+			)
 		}
 
+		logger.Logger.Info("Contract source unresolved automatically; prompting user",
+			"contract_id", contractID)
+		manualPath, promptErr := r.PromptForWasmPath()
+		if promptErr != nil {
+			return nil, fmt.Errorf(
+				"failed to read manual WASM path from stdin: %w\n"+
+					"  In non-interactive environments use --contract-source <path> or --skip-source-mapping.",
+				promptErr,
+			)
+		}
 		if manualPath != "" {
-			// In a real scenario, you might attempt to load symbols from this path
-			// using the dwarf.Parser here. For now, we log the path as per requirements.
 			logger.Logger.Info("Manual WASM path provided by user", "path", manualPath)
 		}
-
 		return nil, nil
 	}
 
-	// 6. Cache the result
+	// 6. Cache the successfully resolved result.
 	if r.cache != nil {
-		if err := r.cache.Put(source); err != nil {
-			logger.Logger.Warn("Failed to cache source", "contract_id", contractID, "error", err)
+		if cacheErr := r.cache.Put(source); cacheErr != nil {
+			logger.Logger.Warn("Failed to cache source",
+				"contract_id", contractID, "error", cacheErr)
 		}
 	}
 
@@ -165,87 +236,106 @@ func (r *Resolver) Resolve(ctx context.Context, contractID string) (*SourceCode,
 		"repository", source.Repository,
 		"file_count", len(source.Files),
 	)
-
 	return source, nil
 }
 
 // PromptForWasmPath pauses execution and asks the user for a manual WASM path.
-// Requirement: If Glassbox encounters an unknown contract, pause and ask the user
-// "Please provide path to contract WASM for better mapping".
+// Required by Issue #372: "Please provide path to contract WASM for better mapping".
 func (r *Resolver) PromptForWasmPath() (string, error) {
-	// Exact string required by Issue #372
 	fmt.Print("Please provide path to contract WASM for better mapping: ")
-
 	reader := bufio.NewReader(os.Stdin)
 	path, err := reader.ReadString('\n')
 	if err != nil {
 		return "", err
 	}
-
 	return strings.TrimSpace(path), nil
 }
 
 // AutoDiscoverLocalSymbols scans the project root for local WASM builds.
-// If a bytecode hash match is found, it merges DWARF debug symbols.
+// If a bytecode hash match is found, it loads and merges DWARF debug symbols.
+//
+// Validation:
+//   - projectRoot must not be empty — returns an error immediately.
+//   - expectedHash must not be empty — returns an error immediately.
+//   - A missing build directory is treated as a non-fatal debug hint; the
+//     caller can continue without local symbols.
 func (r *Resolver) AutoDiscoverLocalSymbols(projectRoot string, expectedHash string) error {
-	searchDir := filepath.Join(projectRoot, wasmTargetPath)
+	if projectRoot == "" {
+		return fmt.Errorf(
+			"AutoDiscoverLocalSymbols: projectRoot must not be empty\n" +
+				"  Hint: pass the path to your Rust workspace root.",
+		)
+	}
+	if expectedHash == "" {
+		return fmt.Errorf(
+			"AutoDiscoverLocalSymbols: expectedHash must not be empty\n" +
+				"  Hint: provide the SHA-256 hex hash of the on-chain contract bytecode.",
+		)
+	}
 
-	// Verify directory exists
-	if _, err := os.Stat(searchDir); os.IsNotExist(err) {
-		logger.Logger.Debug("Local build directory not found", "path", searchDir)
+	discovery, discErr := DiscoverLocalSymbols(projectRoot)
+	if discErr != nil {
+		// A missing build directory is diagnostic, not fatal.
+		logger.Logger.Debug("Local symbol discovery: build directory not available",
+			"project_root", projectRoot, "reason", discErr.Error())
 		return nil
 	}
 
-	files, err := os.ReadDir(searchDir)
-	if err != nil {
-		return fmt.Errorf("failed to read local wasm directory: %w", err)
+	for _, w := range discovery.Warnings {
+		logger.Logger.Warn("Local symbol discovery warning", "detail", w)
 	}
 
-	for _, file := range files {
-		if file.IsDir() || !strings.HasSuffix(file.Name(), ".wasm") {
-			continue
-		}
-
-		fullPath := filepath.Join(searchDir, file.Name())
-		content, err := os.ReadFile(fullPath)
-		if err != nil {
-			continue
-		}
-
-		// Check bytecode hash
-		hash := sha256.Sum256(content)
-		actualHash := hex.EncodeToString(hash[:])
-
-		if actualHash != expectedHash {
-			continue
-		}
-
-		// Match found! Extract symbols
-		logger.Logger.Info("Found local WASM match", "file", file.Name())
-
-		parser, err := dwarf.NewParser(content)
-		if err != nil {
-			logger.Logger.Error("Failed to parse DWARF", "file", file.Name(), "error", err)
-			continue
-		}
-
-		if !parser.HasDebugInfo() {
-			logger.Logger.Warn("Local WASM found but contains no debug symbols", "file", file.Name())
-			continue
-		}
-
-		subprograms, err := parser.GetSubprograms()
-		if err != nil {
-			logger.Logger.Error("Failed to extract subprograms", "file", file.Name(), "error", err)
-			continue
-		}
-
-		// Integration point: Merge symbols into the resolver session
-		logger.Logger.Info("Automatically merged symbols from local build",
-			"file", file.Name(),
-			"count", len(subprograms))
+	matchedPath, ok := discovery.Found[expectedHash]
+	if !ok {
+		logger.Logger.Debug("No local WASM matches on-chain hash",
+			"expected_hash", expectedHash,
+			"candidates_checked", len(discovery.Found),
+			"search_dir", discovery.SearchDir,
+		)
+		return nil
 	}
 
+	content, readErr := os.ReadFile(matchedPath)
+	if readErr != nil {
+		return fmt.Errorf(
+			"local WASM match found at %q but could not be read: %w\n"+
+				"  Check file permissions and try again.",
+			matchedPath, readErr,
+		)
+	}
+
+	logger.Logger.Info("Found local WASM match",
+		"file", filepath.Base(matchedPath), "path", matchedPath)
+
+	parser, parseErr := dwarf.NewParser(content)
+	if parseErr != nil {
+		return fmt.Errorf(
+			"failed to parse DWARF from %q: %w\n"+
+				"  Ensure the WASM was compiled with 'debug = true' in [profile.release].",
+			matchedPath, parseErr,
+		)
+	}
+
+	if !parser.HasDebugInfo() {
+		logger.Logger.Warn(
+			"Local WASM found but contains no DWARF debug symbols — source mapping will be limited",
+			"file", filepath.Base(matchedPath),
+			"hint", "recompile with 'debug = true' in [profile.release] for accurate source mapping",
+		)
+		return nil
+	}
+
+	subprograms, spErr := parser.GetSubprograms()
+	if spErr != nil {
+		return fmt.Errorf(
+			"failed to extract DWARF subprograms from %q: %w",
+			matchedPath, spErr,
+		)
+	}
+
+	logger.Logger.Info("Automatically merged symbols from local build",
+		"file", filepath.Base(matchedPath),
+		"count", len(subprograms))
 	return nil
 }
 

@@ -6,6 +6,7 @@ package sourcemap
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -57,20 +58,7 @@ func TestResolveGitHubURL_ExternalFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GitHubURL: %v", err)
 	}
-	if !contains(url, "github.com/example/external-lib/blob/main/src/lib.rs") {
+	if !strings.Contains(url, "github.com/example/external-lib/blob/main/src/lib.rs") {
 		t.Fatalf("unexpected url: %s", url)
 	}
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(sub) == 0 || indexOf(s, sub) >= 0)
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }

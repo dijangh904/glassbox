@@ -6,7 +6,6 @@ package sourcemap
 import (
 	"encoding/json"
 	"fmt"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -308,7 +307,7 @@ func (ws *WorkspaceSource) AddSourceMap(filePath string, sm SourceMapData) {
 
 // GetSourceMap returns the source map data for a specific file.
 func (ws *WorkspaceSource) GetSourceMap(filePath string) (SourceMapData, bool) {
-	sm, ok := ws.SourceMapData[filePath]
+	sm, ok := ws.SourceMaps[filePath]
 	return sm, ok
 }
 
@@ -344,7 +343,7 @@ func (ws *WorkspaceSource) LogWorkspaceSummary() {
 		"wasm_hash", ws.WasmHash,
 		"file_count", len(ws.Files),
 		"crate_count", len(ws.CrateInfo),
-		"source_map_count", len(ws.SourceMapData),
+		"source_map_count", len(ws.SourceMaps),
 	)
 
 	for crateID, info := range ws.CrateInfo {

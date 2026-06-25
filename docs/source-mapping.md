@@ -16,7 +16,25 @@ the following pipeline:
 4. **`--contract-source` override** — uses the explicitly provided local path
    (see below).
 5. **Interactive prompt** — asks the user for a WASM path when all automatic
-   methods fail.
+   methods fail. In non-interactive environments (CI pipelines) this stage is
+   skipped and an explicit error is returned instead of hanging on stdin.
+
+### Non-interactive / CI mode
+
+In CI pipelines and other non-interactive environments, the interactive prompt
+is disabled automatically. When all discovery stages fail, Glassbox returns an
+explicit error:
+
+```
+contract source not found: all discovery stages exhausted for contract "C..."
+  Stages tried: cache, registry (stellar.expert), GitHub retriever, --contract-source override
+  To resolve: provide --contract-source <path> pointing to the contract source directory,
+  or verify the contract on stellar.expert to enable registry lookup.
+  Use --skip-source-mapping to proceed without source mapping.
+```
+
+Set `--skip-source-mapping` to bypass source discovery entirely when you only
+need raw trace output.
 
 ## `--contract-source` Override
 
@@ -36,6 +54,18 @@ Or for local WASM replay:
 glassbox debug --wasm ./contract.wasm \
                --contract-source /path/to/contract/src
 ```
+
+### Validation
+
+The `--contract-source` path is validated before any network or simulator work begins:
+
+| Condition | Error |
+|-----------|-------|
+| Path does not exist | `--contract-source: directory not found: "<path>"` |
+| Path is a file, not a directory | `--contract-source: "<path>" is a file, not a directory` |
+| Path is not accessible | `--contract-source: cannot access "<path>": <os error>` |
+
+Each error includes a remediation hint so you know exactly what to fix.
 
 ### How it works
 
@@ -111,3 +141,74 @@ Control trace detail with `--trace-verbosity`:
 glassbox debug --wasm ./contract.wasm --trace-verbosity summary
 glassbox trace --print --trace-verbosity verbose execution.json
 ```
+
+## Fallback pipeline
+
+When no DWARF symbols are available, Glassbox uses a multi-stage fallback
+pipeline to provide a best-effort source location:
+
+| Stage | Mechanism | Quality |
+|-------|-----------|---------|
+| 1 | Full DWARF line-number tables | `full` |
+| 2 | Partial DWARF — extract file names from `.debug_line` even when `.debug_info` is stripped | `partial` |
+| 3 | Symbol heuristics — infer source paths from Rust mangled symbol names | `heuristic` |
+| 4 | Cargo manifest discovery — walk the repo for `Cargo.toml` files | `heuristic` |
+| 5 | Unknown — no mapping possible; WAT disassembly shown instead | `unknown` |
+
+Each fallback stage emits a `Warning:` field in the result explaining what was
+used and why the mapping may be inaccurate, along with a `debug = true`
+remediation hint.
+
+## Local WASM build discovery
+
+Glassbox scans `target/wasm32-unknown-unknown/release/` for WASM files whose
+SHA-256 hash matches the on-chain contract bytecode. When a match is found,
+DWARF symbols are loaded automatically.
+
+If the build directory is missing, Glassbox logs a debug-level message and
+continues without local symbols. The message includes a suggestion to run
+`cargo build` if local symbols are needed.
+
+## `--source-alias` Alias Mapping
+
+When source file paths embedded in DWARF symbols don't match your local
+directory layout, remap them with an alias file:
+
+```bash
+glassbox debug --source-alias ./aliases.json <tx-hash>
+```
+
+The alias file must be a flat JSON object:
+
+```json
+{
+  "my_crate": "/path/to/my_crate/src",
+  "vendor_lib": "/path/to/vendor/lib/src"
+}
+```
+
+**Validation:** The file must be readable and contain valid JSON. Invalid JSON
+produces an explicit error:
+
+```
+--source-alias: failed to parse "<path>" as JSON: <detail>
+  The file must be a flat JSON object mapping alias strings to local paths.
+  Example: {"my_crate": "/path/to/my_crate/src"}
+```
+
+Alias target directories that don't exist on disk produce a **warning** (not
+an error) so debugging can continue if only some aliases are stale.
+
+## Dry-run source discovery checks
+
+`glassbox debug --dry-run` validates source discovery configuration before any
+simulation runs:
+
+```
+[OK]   Source directory: ./src
+[OK]   Source alias file: ./aliases.json (2 mapping(s))
+       Warning: source-alias target for "old_crate" does not exist: "/tmp/old_crate/src"
+```
+
+Failures appear as numbered items in the `Dry-run FAILED` summary with a
+`Fix:` hint for each.

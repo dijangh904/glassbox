@@ -63,6 +63,8 @@ glassbox debug --load-snapshots <registry-file>
 7. Simulator binary presence and version compatibility
 8. Protocol version compatibility (when `--protocol-version` is set)
 9. Trace output configuration validation (when `--trace-output` is provided)
+10. `--contract-source` directory existence and type (when set)
+11. `--source-alias` JSON validity (when set; alias target warnings are printed but not counted as failures)
 
 Each check prints `[OK]` or `[FAIL]` on its own line with detailed remediation guidance. On failure the output ends with a numbered list of all failures so you can address them in one pass.
 
@@ -283,9 +285,16 @@ When `--show-metrics` is set, a performance summary is printed after the simulat
 
 | Flag | Default | Description |
 |---|---|---|
-| `--contract-source` | _(auto-discovery)_ | Explicit path to the contract source directory when auto-discovery fails. |
+| `--contract-source` | _(auto-discovery)_ | Explicit path to the contract source directory when auto-discovery fails. Path is validated at startup: must exist and be a directory. |
 | `--skip-source-mapping` | `false` | Skip DWARF source mapping for faster raw trace replay. |
-| `--source-alias` | _(none)_ | Path to a JSON file mapping embedded source paths to local filesystem paths. |
+| `--source-alias` | _(none)_ | Path to a JSON file mapping embedded source paths to local filesystem paths. File must contain valid JSON; invalid JSON is rejected with an actionable error. |
+
+**Source discovery in CI:** In non-interactive environments (CI pipelines), the
+interactive stdin prompt is skipped. When all discovery stages fail, an explicit
+error is returned listing every stage that was tried and suggesting
+`--contract-source` or `--skip-source-mapping` as remedies. The `--dry-run`
+flag includes source-discovery pre-flight checks so configuration problems are
+caught before any simulation begins.
 
 ---
 
@@ -338,6 +347,7 @@ The debug command returns explicit, actionable errors for all common failure mod
 | Missing `--wasm` with `--hot-reload` | `--hot-reload requires --wasm; provide --wasm <path> to enable hot reload` |
 | `--wasm` file not found | `--wasm: file not found: "<path>" — Build your contract first …` |
 | `--wasm` not a valid WASM binary | `--wasm: "<path>": not a valid WASM binary (bad magic bytes …)` |
+| Source discovery exhausted (non-interactive) | `contract source not found: all discovery stages exhausted for contract "…" — provide --contract-source <path> or --skip-source-mapping` |
 | `--contract-source` not found | `--contract-source: directory not found: "<path>"` |
 | `--contract-source` is a file | `--contract-source: "<path>" is a file, not a directory` |
 | `--mock-ledger-manifest` not found | `--mock-ledger-manifest: file not found: "<path>"` |

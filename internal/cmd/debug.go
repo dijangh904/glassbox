@@ -575,6 +575,12 @@ Local WASM Replay Mode:
 					"set them to the same URL or remove one")
 		}
 
+		// Validate source discovery configuration before any network or
+		// simulator work begins so users get actionable guidance early.
+		if err := validateSourceDiscoveryFlags(); err != nil {
+			return err
+		}
+
 		// Validate all input paths using the security-aware path normalizer.
 		// This rejects null-byte injection, path traversal sequences, and
 		// non-existent files before any network or simulator work begins.
@@ -2470,6 +2476,63 @@ func collectVisibleSections(resp *simulator.SimulationResponse, findings []secur
 		sections = append(sections, "tokenflow")
 	}
 	return sections
+}
+
+// validateSourceDiscoveryFlags validates source-discovery-related flags for
+// code paths (--wasm, --demo, --xdr-file, --json-file) that return early in
+// PreRunE before the inline --contract-source / --source-alias checks execute.
+// For the normal transaction-hash path those inline checks still apply; this
+// function acts as a safety net for the early-return paths.
+func validateSourceDiscoveryFlags() error {
+	// Only validate when the inline block was skipped (early-return paths).
+	// For the transaction-hash path the inline checks already cover both flags.
+	// We run an unconditional check here so wasm/demo/local-file modes also get
+	// early feedback rather than a silent no-op.
+
+	// --contract-source must be an existing directory.
+	if contractSourceFlag != "" {
+		info, statErr := os.Stat(contractSourceFlag)
+		if statErr != nil {
+			if os.IsNotExist(statErr) {
+				return errors.WrapValidationError(fmt.Sprintf(
+					"--contract-source: directory not found: %q\n"+
+						"  Provide the path to your contract's source directory (the one containing src/).\n"+
+						"  Source mapping will be unavailable without a valid path.",
+					contractSourceFlag,
+				))
+			}
+			return errors.WrapValidationError(fmt.Sprintf(
+				"--contract-source: cannot access %q: %v", contractSourceFlag, statErr,
+			))
+		}
+		if !info.IsDir() {
+			return errors.WrapValidationError(fmt.Sprintf(
+				"--contract-source: %q is a file, not a directory\n"+
+					"  Provide the path to your contract's source directory, not a file.",
+				contractSourceFlag,
+			))
+		}
+	}
+
+	// --source-alias must be readable valid JSON.
+	if sourceAliasFlag != "" {
+		aliasBytes, readErr := os.ReadFile(sourceAliasFlag)
+		if readErr == nil {
+			var aliasMap map[string]string
+			if jsonErr := json.Unmarshal(aliasBytes, &aliasMap); jsonErr != nil {
+				return errors.WrapValidationError(fmt.Sprintf(
+					"--source-alias: failed to parse %q as JSON: %v\n"+
+						"  The file must be a flat JSON object mapping alias strings to local paths.\n"+
+						"  Example: {\"my_crate\": \"/path/to/my_crate/src\"}",
+					sourceAliasFlag, jsonErr,
+				))
+			}
+		}
+		// File-not-found is handled by validateFilePath upstream;
+		// we only re-parse here to catch truncated/corrupt JSON files.
+	}
+
+	return nil
 }
 
 func applyDebugSimulationOptions(req *simulator.SimulationRequest) {
