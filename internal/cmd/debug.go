@@ -464,6 +464,105 @@ Local WASM Replay Mode:
 				}
 			}
 		}
+
+		// Validate --wasm file existence and WASM magic bytes before executing.
+		if wasmPath != "" {
+			wasmBytes, readErr := os.ReadFile(wasmPath)
+			if readErr != nil {
+				if os.IsNotExist(readErr) {
+					return errors.WrapValidationError(fmt.Sprintf(
+						"--wasm: file not found: %q\n"+
+							"  Build your contract first (e.g. 'cargo build --release --target wasm32-unknown-unknown')\n"+
+							"  and ensure the path points to the compiled .wasm output.", wasmPath,
+					))
+				}
+				return errors.WrapValidationError(fmt.Sprintf(
+					"--wasm: cannot read %q: %v", wasmPath, readErr,
+				))
+			}
+			if err := abi.ValidateWasmMagic(wasmBytes, wasmPath); err != nil {
+				return errors.WrapValidationError(err.Error())
+			}
+		}
+
+		// Validate --contract-source points to an accessible directory.
+		if contractSourceFlag != "" && !secureWorkspaceFlag {
+			info, statErr := os.Stat(contractSourceFlag)
+			if statErr != nil {
+				if os.IsNotExist(statErr) {
+					return errors.WrapValidationError(fmt.Sprintf(
+						"--contract-source: directory not found: %q\n"+
+							"  Provide the path to your contract's source directory (the one containing src/).\n"+
+							"  Source mapping will be unavailable without a valid path.",
+						contractSourceFlag,
+					))
+				}
+				return errors.WrapValidationError(fmt.Sprintf(
+					"--contract-source: cannot access %q: %v", contractSourceFlag, statErr,
+				))
+			}
+			if !info.IsDir() {
+				return errors.WrapValidationError(fmt.Sprintf(
+					"--contract-source: %q is a file, not a directory\n"+
+						"  Provide the path to your contract's source directory, not a file.",
+					contractSourceFlag,
+				))
+			}
+		}
+
+		// Validate --mock-ledger-manifest file existence (full content validation
+		// happens in loadMockLedgerOverrides during RunE).
+		if mockLedgerManifest != "" {
+			if _, statErr := os.Stat(mockLedgerManifest); statErr != nil {
+				if os.IsNotExist(statErr) {
+					return errors.WrapValidationError(fmt.Sprintf(
+						"--mock-ledger-manifest: file not found: %q\n"+
+							"  Ensure the path is correct before running the debug command.",
+						mockLedgerManifest,
+					))
+				}
+				return errors.WrapValidationError(fmt.Sprintf(
+					"--mock-ledger-manifest: cannot access %q: %v", mockLedgerManifest, statErr,
+				))
+			}
+		}
+
+		// Validate --source-alias file existence and JSON parse.
+		if sourceAliasFlag != "" {
+			aliasBytes, readErr := os.ReadFile(sourceAliasFlag)
+			if readErr != nil {
+				if os.IsNotExist(readErr) {
+					return errors.WrapValidationError(fmt.Sprintf(
+						"--source-alias: file not found: %q\n"+
+							"  Provide a JSON file mapping embedded source paths to local filesystem paths.\n"+
+							"  Example: {\"my_crate\": \"/path/to/my_crate/src\"}",
+						sourceAliasFlag,
+					))
+				}
+				return errors.WrapValidationError(fmt.Sprintf(
+					"--source-alias: cannot read %q: %v", sourceAliasFlag, readErr,
+				))
+			}
+			var aliasMap map[string]string
+			if jsonErr := json.Unmarshal(aliasBytes, &aliasMap); jsonErr != nil {
+				return errors.WrapValidationError(fmt.Sprintf(
+					"--source-alias: failed to parse %q as JSON: %v\n"+
+						"  The file must be a flat JSON object mapping alias strings to real directory paths.\n"+
+						"  Example: {\"my_crate\": \"/path/to/my_crate/src\"}",
+					sourceAliasFlag, jsonErr,
+				))
+			}
+			// Warn about alias target paths that don't exist on disk.
+			for alias, target := range aliasMap {
+				if _, targetErr := os.Stat(target); targetErr != nil {
+					fmt.Fprintf(os.Stderr,
+						"Warning: --source-alias: target for %q does not exist: %q — source mapping for this alias will be skipped\n",
+						alias, target,
+					)
+				}
+			}
+		}
+
 		if pinEndpointFlag != "" && rpcURLFlag != "" && pinEndpointFlag != rpcURLFlag {
 			return errors.WrapValidationError(
 				"--pin-endpoint must match --rpc-url when both are provided; " +
@@ -1252,10 +1351,16 @@ func runLocalWasmReplay() error {
 	fmt.Println()
 
 	// Analyze WASM binary size and emit warnings for large contracts.
-	if sizeAnalysis, sizeErr := abi.AnalyzeWasmSize(wasmBytes); sizeErr == nil {
-		if msg := abi.FormatWasmSizeWarnings(sizeAnalysis); msg != "" {
-			fmt.Fprintf(os.Stderr, "%s\n", msg)
-		}
+	if sizeAnalysis, sizeErr := abi.AnalyzeWasmSize(wasmBytes); sizeErr != nil {
+		// AnalyzeWasmSize validates the magic bytes and section structure.
+		// Surface the error explicitly rather than silently continuing.
+		return errors.WrapValidationError(fmt.Sprintf(
+			"--wasm: %q is not a valid WASM binary: %v\n"+
+				"  Ensure you are passing a compiled .wasm file produced by 'cargo build --release'.",
+			wasmPath, sizeErr,
+		))
+	} else if msg := abi.FormatWasmSizeWarnings(sizeAnalysis); msg != "" {
+		fmt.Fprintf(os.Stderr, "%s\n", msg)
 	}
 
 	// Check for LTO in the project that produced the WASM

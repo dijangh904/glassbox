@@ -14,6 +14,24 @@ import (
 
 var wasmMagic = []byte{0x00, 0x61, 0x73, 0x6d} // \0asm
 
+// ValidateWasmMagic performs a fast pre-flight check that data starts with the
+// WASM magic bytes and has a plausible minimum length. It does not parse the
+// full binary structure — use AnalyzeWasmSize for that.
+//
+// Returns nil when the data looks like a valid WASM binary, or an error with an
+// actionable message suitable for display to the user.
+func ValidateWasmMagic(data []byte, path string) error {
+	if len(data) < 8 {
+		return fmt.Errorf("%s: file is too small to be a valid WASM binary (%d bytes; minimum 8)", path, len(data))
+	}
+	if data[0] != wasmMagic[0] || data[1] != wasmMagic[1] ||
+		data[2] != wasmMagic[2] || data[3] != wasmMagic[3] {
+		return fmt.Errorf("%s: not a valid WASM binary (bad magic bytes — expected \\0asm; "+
+			"make sure you are passing a compiled .wasm file, not a source file or other binary)", path)
+	}
+	return nil
+}
+
 // ExtractCustomSection parses a WASM binary and returns the payload of the
 // custom section with the given name. Returns (nil, nil) if the section is
 // not present.

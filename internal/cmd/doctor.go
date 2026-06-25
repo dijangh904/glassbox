@@ -63,6 +63,7 @@ const (
 	DepGoModDependencies DependencyID = "go_mod_dependencies"
 	DepConfigTOML        DependencyID = "toml_config"
 	DepRPC               DependencyID = "rpc"
+	DepDeepLink          DependencyID = "deep_link"
 )
 
 const (
@@ -553,19 +554,25 @@ func checkRPC(verbose bool) DependencyStatus {
 		url = env
 	}
 
+	// Always include the URL in the failure hint so the user knows which
+	// endpoint was checked even without --verbose.
+	dep.FixHint = fmt.Sprintf("RPC endpoint %q is unreachable — set GLASSBOX_RPC_URL or check your network connection", url)
+
 	client, err := rpc.NewClient(rpc.WithHorizonURL(url), rpc.WithSorobanURL(url))
 	if err != nil {
+		dep.FixHint = fmt.Sprintf("failed to build RPC client for %q: %v — check GLASSBOX_RPC_URL", url, err)
 		return dep
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := client.GetHealth(ctx); err != nil {
 		if verbose {
-			dep.FixHint = "RPC health check failed: " + err.Error()
+			dep.FixHint = fmt.Sprintf("RPC health check failed for %q: %v", url, err)
 		}
 		return dep
 	}
 	dep.Installed = true
+	dep.Path = url
 	return dep
 }
 
@@ -573,6 +580,7 @@ func checkRPC(verbose bool) DependencyStatus {
 // and that dispatching a mock link actually reaches the current binary.
 func checkDeepLink(verbose bool) DependencyStatus {
 	dep := DependencyStatus{
+		ID:   DepDeepLink,
 		Name: "Deep link (glassbox:// scheme)",
 	}
 

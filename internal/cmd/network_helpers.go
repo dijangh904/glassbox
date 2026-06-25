@@ -4,6 +4,7 @@
 package cmd
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/dotandev/glassbox/internal/config"
@@ -27,7 +28,14 @@ func networkClientOptions(name string) ([]rpc.ClientOption, error) {
 
 	cfg, err := config.GetCustomNetwork(name)
 	if err != nil {
-		return nil, errors.WrapInvalidNetwork(name)
+		// Preserve the underlying error so the user knows whether the network
+		// is simply undefined or whether its config entry is malformed.
+		return nil, errors.WrapValidationError(fmt.Sprintf(
+			"invalid network %q: %v\n"+
+				"  Valid built-in networks: testnet, mainnet, futurenet\n"+
+				"  To use a custom network, add it under [networks.<name>] in your config file.",
+			name, err,
+		))
 	}
 	return []rpc.ClientOption{rpc.WithNetworkConfig(*cfg)}, nil
 }

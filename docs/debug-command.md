@@ -53,9 +53,9 @@ glassbox debug --load-snapshots <registry-file>
 **Checks performed by `--dry-run`:**
 
 1. Transaction hash format (64 hex chars)
-2. Network name validity (`testnet`, `mainnet`, `futurenet`)
+2. Network name validity (`testnet`, `mainnet`, `futurenet`, or a custom network defined in config)
 3. Compare-network name validity (when `--compare-network` is set)
-4. RPC endpoint reachability (health check with a 10-second timeout)
+4. RPC endpoint reachability (health check with a 10-second timeout; empty health status is treated as a failure)
 5. Simulator binary presence and version compatibility
 
 Each check prints `[OK]` or `[FAIL]` on its own line. On failure the output ends with a numbered list of all failures so you can address them in one pass.
@@ -89,32 +89,48 @@ Dry-run FAILED: 2 validation error(s)
 
 ---
 
-## Snapshot Reliability
+## Build Artifact Discovery
 
-When `--snapshot` is used, Glassbox performs a pre-flight validation of the snapshot file **before** any simulation begins:
+The debug command validates all local build artifacts before starting any network call or simulation.
 
-1. **Fingerprint integrity** — the ledger state fingerprint is recomputed and compared to the stored value. A mismatch means the file was modified after it was saved and produces a blocking error with a remediation hint.
-2. **Identity checks** — when a transaction hash and network are known, the snapshot is confirmed to belong to the same transaction and network. A mismatch produces a clear error naming both the stored and expected values.
-3. **Staleness detection** — the snapshot's parameter fingerprint is compared against the current CLI flags (`--network`, `--tx`). A mismatch surfaces a "snapshot is stale" error with the specific reason (changed parameters or changed WASM source hash).
-4. **Drift warning** — if a plain ledger-state JSON file was modified after its fingerprint was written, a prominent warning is printed to stderr before replay continues. This is non-blocking but visible.
+### `--wasm <path>`
 
-**Error examples:**
+Validated at startup:
+- File must exist and be readable. Missing files return: `--wasm: file not found: "<path>" — Build your contract first (e.g. 'cargo build --release ...')`
+- File must begin with the WASM magic bytes (`\0asm`). Non-WASM files return: `--wasm: "<path>": not a valid WASM binary (bad magic bytes)`
+- During replay, the full binary structure is analysed; size warnings are printed to stderr for binaries above 256 KiB.
 
-```
-Error: snapshot failed pre-replay validation: snapshot fingerprint mismatch: stored=abc... computed=def...
-The ledger state appears to have been modified after the snapshot was saved.
-Re-run the debug command to regenerate a valid snapshot
-Use 'glassbox snapshot load --path ./snap.json' to inspect the snapshot details
+### `--contract-source <path>`
 
-Error: snapshot failed pre-replay validation: snapshot network mismatch: snapshot was captured on "mainnet" but replay is targeting "testnet"
-Re-run the debug command with --network testnet to capture a matching snapshot
-```
+Validated at startup:
+- Path must exist on disk. Missing path returns: `--contract-source: directory not found: "<path>"`
+- Path must be a directory, not a file. File paths return: `--contract-source: "<path>" is a file, not a directory`
+- When the path is valid, DWARF source mapping is enabled automatically.
 
-Use `glassbox snapshot load --path <file> --verify` to inspect a snapshot before using it in replay.
+### `--mock-ledger-manifest <path>`
+
+Validated at startup:
+- File must exist. Missing file returns: `--mock-ledger-manifest: file not found: "<path>"`
+- File must be valid JSON with a `"ledger_entries"` key.
+- Each entry value must be non-empty and valid base64-encoded XDR: `--mock-ledger-manifest: entry "<key>" has an invalid base64 value`
+
+### `--mock-ledger-entry key:value`
+
+Validated at startup:
+- Format must be `key:value` — missing colon returns: `--mock-ledger-entry: invalid format "<entry>" — expected key:value`
+- Value must be non-empty: `--mock-ledger-entry: entry "<entry>" has an empty value`
+- Value must be valid base64-encoded XDR.
+
+### `--source-alias <path>`
+
+Validated at startup:
+- File must exist. Missing file returns: `--source-alias: file not found: "<path>"`
+- File must be a valid JSON object. Invalid JSON returns: `--source-alias: failed to parse "<path>" as JSON`
+- Alias target directories that don't exist on disk produce a **warning** (not an error) so you can still debug if only some aliases are stale.
 
 ---
 
-## Local Replay Modes
+
 
 ### WASM replay (no network required)
 
@@ -297,6 +313,17 @@ The debug command returns explicit, actionable errors for all common failure mod
 | Invalid `--compare-network` | `invalid --compare-network "…"; must be one of: testnet, mainnet, futurenet` |
 | Same `--network` and `--compare-network` | `--network and --compare-network must be different networks; both are "…"` |
 | Missing `--wasm` with `--hot-reload` | `--hot-reload requires --wasm; provide --wasm <path> to enable hot reload` |
+| `--wasm` file not found | `--wasm: file not found: "<path>" — Build your contract first …` |
+| `--wasm` not a valid WASM binary | `--wasm: "<path>": not a valid WASM binary (bad magic bytes …)` |
+| `--contract-source` not found | `--contract-source: directory not found: "<path>"` |
+| `--contract-source` is a file | `--contract-source: "<path>" is a file, not a directory` |
+| `--mock-ledger-manifest` not found | `--mock-ledger-manifest: file not found: "<path>"` |
+| `--mock-ledger-manifest` invalid JSON | `--mock-ledger-manifest: failed to parse "<path>" as JSON: …` |
+| `--mock-ledger-manifest` empty/bad value | `--mock-ledger-manifest: entry "<key>" has an empty value` |
+| `--mock-ledger-entry` bad format | `--mock-ledger-entry: invalid format "<entry>" — expected key:value` |
+| `--mock-ledger-entry` empty value | `--mock-ledger-entry: entry "<entry>" has an empty value` |
+| `--source-alias` not found | `--source-alias: file not found: "<path>"` |
+| `--source-alias` invalid JSON | `--source-alias: failed to parse "<path>" as JSON: …` |
 | Both `--xdr-file` and `--json-file` | `only one of --xdr-file or --json-file may be specified; remove one of the two flags` |
 | Hash + local file conflict | `cannot specify both a transaction hash and a local envelope file; use either a hash or --xdr-file/--json-file, not both` |
 | `--watch` with local file | `--watch cannot be used with local envelope input; remove --watch or provide a transaction hash instead` |

@@ -30,22 +30,20 @@ func runDebugDryRun(cmd *cobra.Command, txHash string) error {
 		fmt.Fprintf(out, "[OK]   Transaction hash format is valid (%d hex chars)\n", len(txHash))
 	}
 
-	// Network selection
-	switch rpc.Network(networkFlag) {
-	case rpc.Testnet, rpc.Mainnet, rpc.Futurenet:
+	// Network selection — accept both built-in and custom-configured networks.
+	if err := validateNetworkName(networkFlag); err != nil {
+		failures = append(failures, fmt.Sprintf("network: %v", err))
+		fmt.Fprintf(errOut, "[FAIL] Invalid network %q — must be testnet, mainnet, futurenet, or a custom network defined in config\n", networkFlag)
+	} else {
 		fmt.Fprintf(out, "[OK]   Network selection: %s\n", networkFlag)
-	default:
-		failures = append(failures, fmt.Sprintf("network: invalid network %q", networkFlag))
-		fmt.Fprintf(errOut, "[FAIL] Invalid network: %s (expected testnet, mainnet, or futurenet)\n", networkFlag)
 	}
 
 	if compareNetworkFlag != "" {
-		switch rpc.Network(compareNetworkFlag) {
-		case rpc.Testnet, rpc.Mainnet, rpc.Futurenet:
+		if err := validateNetworkName(compareNetworkFlag); err != nil {
+			failures = append(failures, fmt.Sprintf("compare-network: %v", err))
+			fmt.Fprintf(errOut, "[FAIL] Invalid compare network %q — must be testnet, mainnet, futurenet, or a custom network defined in config\n", compareNetworkFlag)
+		} else {
 			fmt.Fprintf(out, "[OK]   Compare network: %s\n", compareNetworkFlag)
-		default:
-			failures = append(failures, fmt.Sprintf("compare-network: invalid network %q", compareNetworkFlag))
-			fmt.Fprintf(errOut, "[FAIL] Invalid compare network: %s\n", compareNetworkFlag)
 		}
 	}
 
@@ -58,7 +56,7 @@ func runDebugDryRun(cmd *cobra.Command, txHash string) error {
 	opts, err := networkClientOptions(networkFlag)
 	if err != nil {
 		failures = append(failures, fmt.Sprintf("rpc client: %v", err))
-		fmt.Fprintf(errOut, "[FAIL] Failed to build RPC client options: %v\n", err)
+		fmt.Fprintf(errOut, "[FAIL] Failed to build RPC client options for network %q: %v\n", networkFlag, err)
 	} else {
 		if rpcTokenFlag != "" {
 			opts = append(opts, rpc.WithToken(rpcTokenFlag))
@@ -81,13 +79,22 @@ func runDebugDryRun(cmd *cobra.Command, txHash string) error {
 			health, healthErr := client.GetHealth(probeCtx)
 			if healthErr != nil {
 				failures = append(failures, fmt.Sprintf("endpoint reachability: %v", healthErr))
-				fmt.Fprintf(errOut, "[FAIL] RPC endpoint unreachable: %v\n", healthErr)
+				fmt.Fprintf(errOut, "[FAIL] RPC endpoint unreachable: %v\n"+
+					"       Fix: check your network connection or run 'glassbox doctor' for a full diagnosis\n",
+					healthErr)
 			} else {
 				status := "unknown"
 				if health != nil && health.Result.Status != "" {
 					status = health.Result.Status
 				}
-				fmt.Fprintf(out, "[OK]   RPC endpoint reachable (status: %s)\n", status)
+				if status == "unknown" || status == "" {
+					// RPC responded but returned no status — treat as a warning, not a pass.
+					failures = append(failures, "endpoint reachability: RPC responded but returned no health status")
+					fmt.Fprintf(errOut, "[FAIL] RPC endpoint returned an empty health status — the node may be starting up\n"+
+						"       Fix: wait for the node to become ready or check its logs\n")
+				} else {
+					fmt.Fprintf(out, "[OK]   RPC endpoint reachable (status: %s)\n", status)
+				}
 			}
 		}
 	}
