@@ -423,6 +423,22 @@ glassbox debug --load-snapshots ./registry.json
 
 ---
 
+## Error diagnostics and recovery
+
+When a debug run fails, Glassbox prints an actionable `Hint:` line alongside the
+error, so failures explain how to recover rather than only what went wrong:
+
+```
+Error: ERST_RPC_CONNECTION_FAILED: RPC connection failed: dial tcp ...
+Hint: The RPC endpoint could not be reached. Check your internet connection and the endpoint, pass a known-good one with --rpc-url <url>, and make sure it serves the selected --network.
+```
+
+Hints are surfaced for the most common recoverable failures, including an
+unreachable or timed-out RPC endpoint, a transaction that cannot be found on the
+selected network, and unsupported Soroban protocol versions.
+
+---
+
 ## See Also
 
 - [`glassbox profile`](./debug-command.md#profile) — gas usage analysis and pprof flamegraph generation

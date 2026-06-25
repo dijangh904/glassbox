@@ -14,6 +14,7 @@ import (
 	"github.com/dotandev/glassbox/internal/cmd"
 	"github.com/dotandev/glassbox/internal/config"
 	"github.com/dotandev/glassbox/internal/crashreport"
+	glassboxerrors "github.com/dotandev/glassbox/internal/errors"
 	"github.com/dotandev/glassbox/internal/version"
 )
 
@@ -88,6 +89,11 @@ func run(execute func() error, stderr io.Writer) int {
 			return cmd.InterruptExitCode
 		}
 		_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
+		// Surface actionable recovery guidance when the error carries a hint,
+		// so failures explain how to recover instead of only what went wrong.
+		if hint := glassboxerrors.Hint(err); hint != "" {
+			_, _ = fmt.Fprintf(stderr, "Hint: %s\n", hint)
+		}
 		return cmd.ExitCodeFor(err)
 	}
 	return cmd.ExitSuccess

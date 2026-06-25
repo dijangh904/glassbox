@@ -37,39 +37,50 @@ func As(err error, target any) bool {
 	return stdliberrors.As(err, target)
 }
 
+// Hint returns the actionable remediation guidance attached to an error via
+// ErstError.Hint, or "" if the error carries none. The CLI uses it to show the
+// user how to recover from a failure instead of printing only a low-level error.
+func Hint(err error) string {
+	var e *ErstError
+	if As(err, &e) {
+		return e.Hint
+	}
+	return ""
+}
+
 // Sentinel errors for comparison with errors.Is
 var (
-	ErrTransactionNotFound  = stdliberrors.New("transaction not found")
-	ErrRPCConnectionFailed  = stdliberrors.New("RPC connection failed")
-	ErrRPCTimeout           = stdliberrors.New("RPC request timed out")
-	ErrAllRPCFailed         = stdliberrors.New("all RPC endpoints failed")
-	ErrSimulatorNotFound    = stdliberrors.New("simulator binary not found")
-	ErrSimulationFailed     = stdliberrors.New("simulation execution failed")
-	ErrSimCrash             = stdliberrors.New("simulator process crashed")
-	ErrInvalidNetwork       = stdliberrors.New("invalid network")
-	ErrMarshalFailed        = stdliberrors.New("failed to marshal request")
-	ErrUnmarshalFailed      = stdliberrors.New("failed to unmarshal response")
-	ErrSimulationLogicError = stdliberrors.New("simulation logic error")
-	ErrRPCError             = stdliberrors.New("RPC server returned an error")
-	ErrValidationFailed     = stdliberrors.New("validation failed")
-	ErrProtocolUnsupported  = stdliberrors.New("unsupported protocol version")
-	ErrArgumentRequired     = stdliberrors.New("required argument missing")
-	ErrAuditLogInvalid      = stdliberrors.New("audit log verification failed")
-	ErrSessionNotFound      = stdliberrors.New("session not found")
-	ErrUnauthorized         = stdliberrors.New("unauthorized")
-	ErrLedgerNotFound       = stdliberrors.New("ledger not found")
-	ErrLedgerArchived       = stdliberrors.New("ledger has been archived")
-	ErrRateLimitExceeded    = stdliberrors.New("rate limit exceeded")
-	ErrRPCResponseTooLarge  = stdliberrors.New("RPC response too large")
-	ErrRPCRequestTooLarge   = stdliberrors.New("RPC request payload too large")
-	ErrConfigFailed         = stdliberrors.New("configuration error")
-	ErrNetworkNotFound      = stdliberrors.New("network not found")
-	ErrMissingLedgerKey          = stdliberrors.New("missing ledger key in footprint")
-	ErrWasmInvalid               = stdliberrors.New("invalid WASM file")
-	ErrSpecNotFound              = stdliberrors.New("contract spec not found")
-	ErrShellExit                 = stdliberrors.New("exit")
-	ErrRegistryConflict          = stdliberrors.New("protocol registry conflict detected")
-	ErrLedgerSequenceMismatch    = stdliberrors.New("ledger sequence mismatch")
+	ErrTransactionNotFound    = stdliberrors.New("transaction not found")
+	ErrRPCConnectionFailed    = stdliberrors.New("RPC connection failed")
+	ErrRPCTimeout             = stdliberrors.New("RPC request timed out")
+	ErrAllRPCFailed           = stdliberrors.New("all RPC endpoints failed")
+	ErrSimulatorNotFound      = stdliberrors.New("simulator binary not found")
+	ErrSimulationFailed       = stdliberrors.New("simulation execution failed")
+	ErrSimCrash               = stdliberrors.New("simulator process crashed")
+	ErrInvalidNetwork         = stdliberrors.New("invalid network")
+	ErrMarshalFailed          = stdliberrors.New("failed to marshal request")
+	ErrUnmarshalFailed        = stdliberrors.New("failed to unmarshal response")
+	ErrSimulationLogicError   = stdliberrors.New("simulation logic error")
+	ErrRPCError               = stdliberrors.New("RPC server returned an error")
+	ErrValidationFailed       = stdliberrors.New("validation failed")
+	ErrProtocolUnsupported    = stdliberrors.New("unsupported protocol version")
+	ErrArgumentRequired       = stdliberrors.New("required argument missing")
+	ErrAuditLogInvalid        = stdliberrors.New("audit log verification failed")
+	ErrSessionNotFound        = stdliberrors.New("session not found")
+	ErrUnauthorized           = stdliberrors.New("unauthorized")
+	ErrLedgerNotFound         = stdliberrors.New("ledger not found")
+	ErrLedgerArchived         = stdliberrors.New("ledger has been archived")
+	ErrRateLimitExceeded      = stdliberrors.New("rate limit exceeded")
+	ErrRPCResponseTooLarge    = stdliberrors.New("RPC response too large")
+	ErrRPCRequestTooLarge     = stdliberrors.New("RPC request payload too large")
+	ErrConfigFailed           = stdliberrors.New("configuration error")
+	ErrNetworkNotFound        = stdliberrors.New("network not found")
+	ErrMissingLedgerKey       = stdliberrors.New("missing ledger key in footprint")
+	ErrWasmInvalid            = stdliberrors.New("invalid WASM file")
+	ErrSpecNotFound           = stdliberrors.New("contract spec not found")
+	ErrShellExit              = stdliberrors.New("exit")
+	ErrRegistryConflict       = stdliberrors.New("protocol registry conflict detected")
+	ErrLedgerSequenceMismatch = stdliberrors.New("ledger sequence mismatch")
 )
 
 type LedgerNotFoundError struct {
@@ -144,6 +155,7 @@ func WrapTransactionNotFound(err error) error {
 		Code:    ErstTransactionNotFound,
 		Message: "transaction not found",
 		OrigErr: err,
+		Hint:    "Check the transaction hash and confirm --network matches where it was submitted (testnet, mainnet, or futurenet). If the transaction is recent the RPC may not have indexed it yet — retry shortly or use --watch to wait for it.",
 	}
 }
 
@@ -152,6 +164,7 @@ func WrapRPCConnectionFailed(err error) error {
 		Code:    ErstRPCConnectionFailed,
 		Message: "RPC connection failed",
 		OrigErr: err,
+		Hint:    "The RPC endpoint could not be reached. Check your internet connection and the endpoint, pass a known-good one with --rpc-url <url>, and make sure it serves the selected --network.",
 	}
 }
 
@@ -211,6 +224,7 @@ func WrapRPCTimeout(err error) error {
 		Code:    ErstRPCTimeout,
 		Message: "RPC request timed out",
 		OrigErr: err,
+		Hint:    "The RPC endpoint did not respond in time. It may be overloaded or slow — retry, raise the timeout, or switch to a different endpoint with --rpc-url <url>.",
 	}
 }
 
@@ -251,6 +265,7 @@ func WrapProtocolUnsupported(version uint32) error {
 	return &ErstError{
 		Code:    ErstValidationFailed,
 		Message: fmt.Sprintf("unsupported protocol version: %d", version),
+		Hint:    "This build of Glassbox does not support that Soroban protocol version. Update to a newer Glassbox release, or target a transaction on a network running a supported protocol.",
 	}
 }
 

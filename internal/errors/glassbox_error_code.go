@@ -40,6 +40,15 @@ type ErstError struct {
 	Code    ErstErrorCode
 	Message string // human-readable message
 	OrigErr error  // original error
+	Hint    string // optional, actionable remediation guidance for the user
+}
+
+// WithHint attaches actionable remediation guidance to the error and returns it.
+// The hint is surfaced to the user alongside the error so failures explain how
+// to recover instead of leaving only a low-level message.
+func (e *ErstError) WithHint(hint string) *ErstError {
+	e.Hint = hint
+	return e
 }
 
 func (e *ErstError) Error() string {
