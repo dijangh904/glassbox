@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -159,6 +160,29 @@ func TestResolve_NonInteractive_ErrorListsAllStages(t *testing.T) {
 	assert.Contains(t, msg, "registry")
 	assert.Contains(t, msg, "GitHub")
 	assert.Contains(t, msg, "--contract-source override")
+}
+
+func TestLoadAliasConfig_NonExistentTargetReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	aliasPath := filepath.Join(dir, "aliases.json")
+	require.NoError(t, os.WriteFile(aliasPath, []byte(`{"my_crate":"/definitely/missing"}`), 0o644))
+
+	_, err := LoadAliasConfig(aliasPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "existing directory")
+}
+
+func TestLoadAliasConfig_RelativeTargetResolvedAgainstConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "src")
+	require.NoError(t, os.MkdirAll(srcDir, 0o755))
+
+	aliasPath := filepath.Join(dir, "aliases.json")
+	require.NoError(t, os.WriteFile(aliasPath, []byte(`{"my_crate":"src"}`), 0o644))
+
+	aliases, err := LoadAliasConfig(aliasPath)
+	require.NoError(t, err)
+	assert.Equal(t, srcDir, aliases["my_crate"])
 }
 
 // ── Resolver.Resolve — successful registry path ───────────────────────────────

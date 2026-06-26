@@ -112,6 +112,23 @@ func TestValidateSourceDiscoveryFlags_SourceAlias_InvalidJSON_ReturnsError(t *te
 	}
 }
 
+func TestValidateSourceDiscoveryFlags_SourceAlias_FileNotFound_ReturnsError(t *testing.T) {
+	prev := sourceAliasFlag
+	sourceAliasFlag = filepath.Join(t.TempDir(), "missing.json")
+	t.Cleanup(func() { sourceAliasFlag = prev })
+
+	err := validateSourceDiscoveryFlags()
+	if err == nil {
+		t.Fatal("expected error for missing --source-alias file")
+	}
+	if !strings.Contains(err.Error(), "--source-alias") {
+		t.Errorf("error should mention --source-alias, got: %q", err)
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention missing file, got: %q", err)
+	}
+}
+
 func TestValidateSourceDiscoveryFlags_SourceAlias_ValidJSON_ReturnsNil(t *testing.T) {
 	dir := t.TempDir()
 	aliasPath := filepath.Join(dir, "aliases.json")

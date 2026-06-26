@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dotandev/glassbox/internal/rpc"
+	"github.com/dotandev/glassbox/internal/sourcemap"
 	"github.com/dotandev/glassbox/internal/trace"
 	"github.com/spf13/cobra"
 )
@@ -152,7 +153,7 @@ func runDebugDryRun(cmd *cobra.Command, txHash string) error {
 		if simDep.Version != "" {
 			fmt.Fprintf(out, "       Version: %s\n", simDep.Version)
 		}
-		
+
 		// Validate simulator version compatibility
 		if simDep.Version != "" {
 			if err := validateSimulatorVersion(simDep.Version); err != nil {
@@ -169,7 +170,7 @@ func runDebugDryRun(cmd *cobra.Command, txHash string) error {
 	// Additional environment checks
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Additional environment checks:\n")
-	
+
 	// Source discovery pre-flight: validate --contract-source when set.
 	if contractSourceFlag != "" {
 		info, statErr := os.Stat(contractSourceFlag)
@@ -193,7 +194,7 @@ func runDebugDryRun(cmd *cobra.Command, txHash string) error {
 		}
 	}
 
-	// Source alias pre-flight: validate JSON when --source-alias is set.
+	// Source alias pre-flight: validate JSON and target directories when --source-alias is set.
 	if sourceAliasFlag != "" {
 		aliasBytes, readErr := os.ReadFile(sourceAliasFlag)
 		if readErr != nil {
@@ -208,13 +209,11 @@ func runDebugDryRun(cmd *cobra.Command, txHash string) error {
 					"       Fix: ensure the file is a flat JSON object\n"+
 					"       Example: {\"my_crate\": \"/path/to/my_crate/src\"}\n", sourceAliasFlag, jsonErr)
 			} else {
-				fmt.Fprintf(out, "[OK]   Source alias file: %s (%d mapping(s))\n", sourceAliasFlag, len(aliasMap))
-				// Warn about alias targets that don't exist.
-				for alias, target := range aliasMap {
-					if _, targetErr := os.Stat(target); targetErr != nil {
-						fmt.Fprintf(errOut, "       Warning: source-alias target for %q does not exist: %q\n",
-							alias, target)
-					}
+				if _, err := sourcemap.LoadAliasConfig(sourceAliasFlag); err != nil {
+					failures = append(failures, fmt.Sprintf("source-alias: %v", err))
+					fmt.Fprintf(errOut, "[FAIL] --source-alias validation failed: %v\n", err)
+				} else {
+					fmt.Fprintf(out, "[OK]   Source alias file: %s (%d mapping(s))\n", sourceAliasFlag, len(aliasMap))
 				}
 			}
 		}
@@ -231,7 +230,7 @@ func runDebugDryRun(cmd *cobra.Command, txHash string) error {
 			fmt.Fprintf(out, "[OK]   Protocol version %d is supported\n", protocolVersionFlag)
 		}
 	}
-	
+
 	// Validate trace output configuration
 	if traceOutputFile != "" {
 		if err := trace.ValidateTraceInputs(traceVerbosityFlag, debugFormatFlag, "", traceOutputFile); err != nil {
@@ -267,7 +266,7 @@ func validateRPCURL(rawURL string) error {
 	if rawURL == "" {
 		return fmt.Errorf("RPC URL cannot be empty")
 	}
-	
+
 	// Handle comma-separated URLs (fallback support)
 	urls := strings.Split(rawURL, ",")
 	for _, u := range urls {
@@ -275,21 +274,21 @@ func validateRPCURL(rawURL string) error {
 		if u == "" {
 			continue
 		}
-		
+
 		parsed, err := url.Parse(u)
 		if err != nil {
 			return fmt.Errorf("invalid URL format: %w", err)
 		}
-		
+
 		if parsed.Scheme != "http" && parsed.Scheme != "https" {
 			return fmt.Errorf("URL must use http or https scheme, got: %s", parsed.Scheme)
 		}
-		
+
 		if parsed.Host == "" {
 			return fmt.Errorf("URL must have a valid host")
 		}
 	}
-	
+
 	return nil
 }
 
@@ -298,13 +297,13 @@ func validateSimulatorVersion(version string) error {
 	if version == "" {
 		return fmt.Errorf("unable to determine simulator version")
 	}
-	
+
 	// Version compatibility check - this is a basic check
 	// TODO: Add more sophisticated version comparison logic
 	if strings.HasPrefix(version, "0.0.") || version == "unknown" {
 		return fmt.Errorf("simulator version %q appears to be a development build or too old", version)
 	}
-	
+
 	return nil
 }
 
@@ -314,11 +313,11 @@ func validateProtocolVersion(version uint32) error {
 		minSupportedProtocol = 20
 		maxSupportedProtocol = 23
 	)
-	
+
 	if version < minSupportedProtocol || version > maxSupportedProtocol {
-		return fmt.Errorf("protocol version %d is outside the supported range (%d-%d)", 
+		return fmt.Errorf("protocol version %d is outside the supported range (%d-%d)",
 			version, minSupportedProtocol, maxSupportedProtocol)
 	}
-	
+
 	return nil
 }

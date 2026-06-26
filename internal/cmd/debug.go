@@ -18,10 +18,10 @@ import (
 	"time"
 
 	"github.com/dotandev/glassbox/internal/abi"
+	"github.com/dotandev/glassbox/internal/clioutput"
 	"github.com/dotandev/glassbox/internal/config"
 	"github.com/dotandev/glassbox/internal/decenstorage"
 	"github.com/dotandev/glassbox/internal/decoder"
-	"github.com/dotandev/glassbox/internal/clioutput"
 	"github.com/dotandev/glassbox/internal/errors"
 	"github.com/dotandev/glassbox/internal/logger"
 	"github.com/dotandev/glassbox/internal/lto"
@@ -35,8 +35,8 @@ import (
 	"github.com/dotandev/glassbox/internal/snapshot"
 	"github.com/dotandev/glassbox/internal/sourcemap"
 	"github.com/dotandev/glassbox/internal/telemetry"
-	"github.com/dotandev/glassbox/internal/trace"
 	"github.com/dotandev/glassbox/internal/tokenflow"
+	"github.com/dotandev/glassbox/internal/trace"
 	simtypes "github.com/dotandev/glassbox/internal/types"
 	"github.com/dotandev/glassbox/internal/version"
 	"github.com/dotandev/glassbox/internal/visualizer"
@@ -50,46 +50,46 @@ import (
 )
 
 var (
-	networkFlag          string
-	rpcURLFlag           string
-	rpcTokenFlag         string
-	tracingEnabled       bool
-	otlpExporterURL      string
-	generateTrace        bool
-	traceOutputFile      string
-	snapshotFlag         string
-	compareNetworkFlag   string
-	verbose              bool
-	wasmPath             string
-	args                 []string
-	xdrFileFlag          string
-	jsonFileFlag         string
-	resultMetaFileFlag   string
-	mockLedgerEntryFlags []string
-	mockLedgerManifest   string
-	themeFlag            string
-	noCacheFlag          bool
-	demoMode             bool
-	watchFlag            bool
-	watchTimeoutFlag     int
-	hotReloadFlag        bool
-	hotReloadInterval    time.Duration
-	snapshotsFlag        bool
-	protocolVersionFlag  uint32
-	auditKeyFlag         string
-	publishIPFSFlag      bool
-	publishArweaveFlag   bool
-	ipfsNodeFlag         string
-	arweaveGatewayFlag   string
-	arweaveWalletFlag    string
-	mockTimeFlag         int64
-	mockBaseFeeFlag      uint32
-	mockGasPriceFlag     uint64
-	exportSVGFlag        string
-	loadSnapshotsFlag    string
-	saveSnapshotsFlag    string
-	wasmBase64           string
-	contractSourceFlag   string
+	networkFlag           string
+	rpcURLFlag            string
+	rpcTokenFlag          string
+	tracingEnabled        bool
+	otlpExporterURL       string
+	generateTrace         bool
+	traceOutputFile       string
+	snapshotFlag          string
+	compareNetworkFlag    string
+	verbose               bool
+	wasmPath              string
+	args                  []string
+	xdrFileFlag           string
+	jsonFileFlag          string
+	resultMetaFileFlag    string
+	mockLedgerEntryFlags  []string
+	mockLedgerManifest    string
+	themeFlag             string
+	noCacheFlag           bool
+	demoMode              bool
+	watchFlag             bool
+	watchTimeoutFlag      int
+	hotReloadFlag         bool
+	hotReloadInterval     time.Duration
+	snapshotsFlag         bool
+	protocolVersionFlag   uint32
+	auditKeyFlag          string
+	publishIPFSFlag       bool
+	publishArweaveFlag    bool
+	ipfsNodeFlag          string
+	arweaveGatewayFlag    string
+	arweaveWalletFlag     string
+	mockTimeFlag          int64
+	mockBaseFeeFlag       uint32
+	mockGasPriceFlag      uint64
+	exportSVGFlag         string
+	loadSnapshotsFlag     string
+	saveSnapshotsFlag     string
+	wasmBase64            string
+	contractSourceFlag    string
 	debugJSONFlag         bool
 	debugFormatFlag       string
 	skipSourceMappingFlag bool
@@ -856,7 +856,9 @@ Local WASM Replay Mode:
 				networkFlag = localInputNetwork
 			}
 			fmt.Printf("Loaded local transaction envelope from %s\n", func() string {
-				if xdrFileFlag != "" { return xdrFileFlag }
+				if xdrFileFlag != "" {
+					return xdrFileFlag
+				}
 				return jsonFileFlag
 			}())
 			fmt.Printf("Envelope size: %d bytes\n", len(resp.EnvelopeXdr))
@@ -1125,22 +1127,22 @@ Local WASM Replay Mode:
 						return
 					}
 
-var entries map[string]string
-				var extractErr error
-				if useLiveLedger {
-					entries, extractErr = compareClient.GetLedgerEntries(ctx, keys)
-					if extractErr != nil {
-						compareErr = extractErr
-						return
-					}
-				} else {
-					entries, extractErr = rpc.ExtractLedgerEntriesFromMeta(compareResp.ResultMetaXdr)
-					if extractErr != nil {
+					var entries map[string]string
+					var extractErr error
+					if useLiveLedger {
 						entries, extractErr = compareClient.GetLedgerEntries(ctx, keys)
 						if extractErr != nil {
 							compareErr = extractErr
 							return
 						}
+					} else {
+						entries, extractErr = rpc.ExtractLedgerEntriesFromMeta(compareResp.ResultMetaXdr)
+						if extractErr != nil {
+							entries, extractErr = compareClient.GetLedgerEntries(ctx, keys)
+							if extractErr != nil {
+								compareErr = extractErr
+								return
+							}
 						}
 					}
 
@@ -1531,15 +1533,15 @@ func runLocalWasmReplay() error {
 
 func newLocalWasmSimulationRequest(forceNoCache bool) *simulator.SimulationRequest {
 	req := &simulator.SimulationRequest{
-		EnvelopeXdr:     "",  // Empty for local replay
-		ResultMetaXdr:   "",  // Empty for local replay
-		LedgerEntries:   nil, // Mock state will be generated
-		WasmPath:        &wasmPath,
-		NoCache:         noCacheFlag || forceNoCache,
-		MockArgs:        &args,
-		ContractWasm:        &wasmBase64, // Pass the WASM binary for source mapping
-		EnableSnapshots:     snapshotsFlag,
-		SkipSourceMapping:   skipSourceMappingFlag,
+		EnvelopeXdr:       "",  // Empty for local replay
+		ResultMetaXdr:     "",  // Empty for local replay
+		LedgerEntries:     nil, // Mock state will be generated
+		WasmPath:          &wasmPath,
+		NoCache:           noCacheFlag || forceNoCache,
+		MockArgs:          &args,
+		ContractWasm:      &wasmBase64, // Pass the WASM binary for source mapping
+		EnableSnapshots:   snapshotsFlag,
+		SkipSourceMapping: skipSourceMappingFlag,
 	}
 	if contractSourceFlag != "" {
 		req.ContractSourcePath = &contractSourceFlag
@@ -2007,13 +2009,19 @@ func printSimulationResult(network string, res *simulator.SimulationResponse) {
 					memStr = fmt.Sprintf("Mem: %d", *event.Mem)
 				}
 				if event.CPU != nil && event.Mem != nil {
-					fee := (*event.CPU / 10000) + (*event.Mem / (64*1024))
+					fee := (*event.CPU / 10000) + (*event.Mem / (64 * 1024))
 					feeStr = fmt.Sprintf("Fee: %d stroops", fee)
 				}
 				parts := []string{}
-				if cpuStr != "" { parts = append(parts, cpuStr) }
-				if memStr != "" { parts = append(parts, memStr) }
-				if feeStr != "" { parts = append(parts, feeStr) }
+				if cpuStr != "" {
+					parts = append(parts, cpuStr)
+				}
+				if memStr != "" {
+					parts = append(parts, memStr)
+				}
+				if feeStr != "" {
+					parts = append(parts, feeStr)
+				}
 				if len(parts) > 0 {
 					fmt.Printf("  %s", strings.Join(parts, " "))
 				}
@@ -2514,22 +2522,34 @@ func validateSourceDiscoveryFlags() error {
 		}
 	}
 
-	// --source-alias must be readable valid JSON.
+	// --source-alias must be readable valid JSON and point to existing directories.
 	if sourceAliasFlag != "" {
 		aliasBytes, readErr := os.ReadFile(sourceAliasFlag)
-		if readErr == nil {
-			var aliasMap map[string]string
-			if jsonErr := json.Unmarshal(aliasBytes, &aliasMap); jsonErr != nil {
+		if readErr != nil {
+			if os.IsNotExist(readErr) {
 				return errors.WrapValidationError(fmt.Sprintf(
-					"--source-alias: failed to parse %q as JSON: %v\n"+
-						"  The file must be a flat JSON object mapping alias strings to local paths.\n"+
+					"--source-alias: file not found: %q\n"+
+						"  Provide a JSON file mapping embedded source paths to local filesystem paths.\n"+
 						"  Example: {\"my_crate\": \"/path/to/my_crate/src\"}",
-					sourceAliasFlag, jsonErr,
+					sourceAliasFlag,
 				))
 			}
+			return errors.WrapValidationError(fmt.Sprintf(
+				"--source-alias: cannot read %q: %v", sourceAliasFlag, readErr,
+			))
 		}
-		// File-not-found is handled by validateFilePath upstream;
-		// we only re-parse here to catch truncated/corrupt JSON files.
+		var aliasMap map[string]string
+		if jsonErr := json.Unmarshal(aliasBytes, &aliasMap); jsonErr != nil {
+			return errors.WrapValidationError(fmt.Sprintf(
+				"--source-alias: failed to parse %q as JSON: %v\n"+
+					"  The file must be a flat JSON object mapping alias strings to local paths.\n"+
+					"  Example: {\"my_crate\": \"/path/to/my_crate/src\"}",
+				sourceAliasFlag, jsonErr,
+			))
+		}
+		if _, err := sourcemap.LoadAliasConfig(sourceAliasFlag); err != nil {
+			return errors.WrapValidationError(fmt.Sprintf("--source-alias: %v", err))
+		}
 	}
 
 	return nil

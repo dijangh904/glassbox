@@ -73,6 +73,25 @@ func LoadAliasConfig(path string) (AliasMap, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("alias: parse config %s: %w", path, err)
 	}
+
+	configDir := filepath.Dir(path)
+	for alias, target := range m {
+		if target == "" {
+			continue
+		}
+		resolved := target
+		if !filepath.IsAbs(resolved) {
+			resolved = filepath.Clean(filepath.Join(configDir, resolved))
+		}
+		info, statErr := os.Stat(resolved)
+		if statErr != nil {
+			return nil, fmt.Errorf("alias: target for %q must point to an existing directory: %q: %w", alias, resolved, statErr)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("alias: target for %q must point to an existing directory: %q", alias, resolved)
+		}
+		m[alias] = resolved
+	}
 	return m, nil
 }
 
